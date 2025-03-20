@@ -1,10 +1,10 @@
 import { Contract, Account } from "starknet";
 
 // Replace with actual contract addresses
-const BRIDGE_ADDRESS = "0x680c4cd19f9bfece1df9e870fab1cb6d92bd7b68f2f3084d17bf44ac6cea0ad";
-const GRIDY_CONTRACT_ADDRESS = "0x268aef2695bb30971776719d3d8b1ba68e0ca0d40ea3008263c0422d7273e80";
-const l3Registry = "0x9cdefae7d251d2c5577c4ed6833c7670b1260b13f4c9f78855b77761a175b8";
-const gridTokenAddress = "0x37c6b379f0ad38853f6a484ac4c024cbb6ffb4de8197f408e8da8ce4415dfc0";
+const BRIDGE_ADDRESS = "0x68a7cf80bd038300bc7455f8d12b07442a2b08694e173d26c48c77495e23fd4";
+const GRIDY_CONTRACT_ADDRESS = "0x61dabf5527d64169587abaf0aaf489dd49e542defed2ee962e6c96fb6b64618";
+const l3Registry = "0x4407329ceb7c8ba43f74e9f89d84a7c44ec46835bbc5337aa82f0aa41ae1368";
+const gridTokenAddress = "0x03821bdc7aaa3c501cc6bba524ecfe79937692b74417bb6f996593c6b065cbe1";
 
 
 export async function depositWithMessage(account: Account, playerAddress: string, tileLocation: string) {

@@ -25,24 +25,23 @@ body {
   /* Header */
   .header {
     display: flex;
-    justify-content: space-between;
+    justify-content: space-between; /* Title left, buttons right */
     align-items: center;
-    margin-bottom: 1%;
-    margin-top: 2.5%;
+    background-color: #1a1a1a;
+    padding: 0.5rem 1rem;
   }
   
+  .header-buttons {
+    display: flex;
+    gap: 8px;
+    margin-right: 0.5rem;
+  }  
+
   .header h1 {
     font-size: 28px;
     font-weight: bold;
     margin-left: 1%;
     color: white;
-  }
-  
-  .header-buttons {
-    position: absolute;
-    right: 0;
-    display: flex;
-    gap: 10px;
   }
 
   /* Stats CSS */

@@ -5,6 +5,8 @@ import { depositWithMessage } from "./Bridge";
 import './styles.css';
 import { useAccount } from "@starknet-react/core";
 import { Account } from "starknet";
+import L1Connector from './connectors/L1Connector';
+import L1BridgeUI from './connectors/L1BridgeUI';
 
 const MainGame: React.FC = () => {
   // State management
@@ -17,25 +19,25 @@ const MainGame: React.FC = () => {
     botsDead: 0,
     totalTilesMined: 0,
   });
-  
+
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
   const [currentLayer, setCurrentLayer] = useState(1);
   const [selectedTiles, setSelectedTiles] = useState<number[]>([]);
   const [hoveredTile, setHoveredTile] = useState<number | null>(null);
   const [tileStates, setTileStates] = useState<Record<string, string>>({});
   const [transitioning, setTransitioning] = useState(false);
-  
+
   // WebSocket references
   const transactionWSRef = useRef<WebSocket | null>(null);
   const statsWSRef = useRef<WebSocket | null>(null);
   const tilesWSRef = useRef<WebSocket | null>(null);
-  
+
   // Wallet state
+  const { account, address } = useAccount();
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [walletProvider, setWalletProvider] = useState<string | null>(null);
   const [walletAccount, setWalletAccount] = useState<Account | null>(null);
-  const { account, address } = useAccount(); // Get the connected Starknet wallet
-  const [showErrorPopup, setShowErrorPopup] = useState(false); // State to show error popup
+  const [showErrorPopup, setShowErrorPopup] = useState(false);
 
   // Set up WebSocket connections
   useEffect(() => {
@@ -82,7 +84,7 @@ const MainGame: React.FC = () => {
   // Handle tile data WebSocket messaging
   useEffect(() => {
     if (!tilesWSRef.current) return;
-  
+
     // Function to convert hex to decimal
     const hexToDecimal = (hex: string): string => {
       if (hex.startsWith('0x')) {
@@ -90,32 +92,32 @@ const MainGame: React.FC = () => {
       }
       return hex;
     };
-  
+
     // Handle tile data messages
     const handleMessage = (event: MessageEvent) => {
       const data = JSON.parse(event.data);
-      
+
       if (data.type === 'tileData') {
         // Process the tile data
         const newTileStates: Record<string, string> = { ...tileStates };
-        
+
         data.data.forEach((tile: any) => {
           // Convert hex location to decimal for consistent lookups
           const decimalLocation = hexToDecimal(tile.location);
           console.log(`Tile ${tile.location} (decimal: ${decimalLocation}) is ${tile.mine_type.toLowerCase()}`);
-          
+
           // Store tile state with decimal location as the key
           newTileStates[decimalLocation] = tile.mine_type.toLowerCase(); // 'Diamond', 'Bomb', or 'Empty'
         });
-  
+
         console.log("Updated tile states:", newTileStates);
         setTileStates(newTileStates);
       }
     };
-  
+
     // Set up the message handler
     tilesWSRef.current.onmessage = handleMessage;
-  
+
     // Clean up function
     return () => {
       if (tilesWSRef.current) {
@@ -130,7 +132,7 @@ const MainGame: React.FC = () => {
     console.log(`WebSocket.OPEN: ${WebSocket.OPEN}`)
     if (currentLayer === 4 && tilesWSRef.current?.readyState === WebSocket.OPEN) {
       const tileRange = calculateTileRangeForCurrentView();
-      
+
       if (tileRange) {
         // Request the data for the current view
         tilesWSRef.current.send(JSON.stringify({
@@ -138,7 +140,7 @@ const MainGame: React.FC = () => {
           layer: currentLayer,
           tileRange: tileRange
         }));
-        
+
         console.log(`Requested tile data for range: ${tileRange}`);
       }
     }
@@ -147,25 +149,25 @@ const MainGame: React.FC = () => {
   // Calculate the range of tiles currently visible in Layer 4
   const calculateTileRangeForCurrentView = () => {
     if (currentLayer !== 4 || selectedTiles.length < 3) return null;
-  
+
     let startIndex = 0;
     selectedTiles.forEach((tile, i) => {
       const multiplier = [200000, 2000, 20][i];
       startIndex += tile * multiplier;
     });
-    
+
     const rangeStart = startIndex + 1;
     const rangeEnd = startIndex + 20; // 20 tiles in layer 4
-    
+
     return `${rangeStart}-${rangeEnd}`;
   };
 
   // Calculate range for hovered tile
   const calculateTileRange = () => {
     if (hoveredTile === null) return null;
-  
+
     const baseRange = [200000, 2000, 20, 1][currentLayer - 1];
-  
+
     let startIndex = 0;
     if (selectedTiles.length > 0) {
       selectedTiles.forEach((tile, i) => {
@@ -173,10 +175,10 @@ const MainGame: React.FC = () => {
         startIndex += tile * multiplier;
       });
     }
-  
+
     const rangeStart = startIndex + hoveredTile * baseRange + 1;
     const rangeEnd = rangeStart + baseRange - 1;
-  
+
     return `${rangeStart}-${rangeEnd}`;
   };
 
@@ -193,17 +195,17 @@ const MainGame: React.FC = () => {
       // Deploy a bot on the tile if it's not already mined
       const tileRange = calculateTileRangeForCurrentView();
       if (!tileRange) return;
-      
+
       const tilePosition = Number(tileRange.split('-')[0]) + index;
       const tileLocation = tilePosition.toString();
       console.log(`Clicked on tile location: ${tileLocation}`);
-      
+
       // Check if the tile has already been mined
       if (tileStates[tileLocation] && tileStates[tileLocation] !== 'unmined') {
         alert('This tile has already been mined!');
         return;
       }
-      
+
       // Handle bot deployment
       handleDeployBot(tileLocation);
     }
@@ -221,45 +223,36 @@ const MainGame: React.FC = () => {
     }
   };
 
-  // Handle wallet connection
-  const handleWalletConnect = (newAddress: string, provider: string) => {
-    console.log("Wallet connected:", newAddress, "Provider:", provider);
-  
-    setWalletAddress(newAddress);
-    setWalletProvider(provider);
-    
-    // Try getting the account directly from window.starknet if useAccount() isn't updating
-    setWalletAccount(window.starknet?.account || account);
-  
-    console.log("WalletAccount State Updated:", window.starknet?.account);
-  };
-  
-  // Function to handle wallet disconnection
-  const handleWalletDisconnect = () => {
-    console.log("Wallet disconnected");
-    setWalletAddress(null);
-    setWalletAccount(null);
-  };
-  
-  // Handle bot deployment
   const handleDeployBot = async (tileLocation: string) => {
     if (!walletAccount || !walletAddress) {
-      setShowErrorPopup(true); // Show popup if wallet is not connected
+      setShowErrorPopup(true);
       return;
     }
-
     try {
-      // Pass the tile location to your depositWithMessage function
       const txHash = await depositWithMessage(walletAccount, walletAddress, tileLocation);
-      alert(`Bot deployed to tile ${tileLocation}! Transaction Hash: ${txHash}`);
+      alert(`Bot deployed to tile ${tileLocation}! TX Hash: ${txHash}`);
     } catch (err) {
-      alert("Bot deployment failed! Check console for details.");
       console.error(err);
+      alert("Deployment failed, see console for details.");
     }
+  };
+
+  // Called when L2 wallet is connected
+  const handleWalletConnect = (newAddress: string, provider: string) => {
+    console.log("Starknet wallet connected:", newAddress, "Provider:", provider);
+    setWalletAddress(newAddress);
+    setWalletProvider(provider);
+    setWalletAccount(window.starknet?.account || account);
+  };
+  // Called when L2 wallet is disconnected
+  const handleWalletDisconnect = () => {
+    setWalletAddress(null);
+    setWalletProvider(null);
+    setWalletAccount(null);
   };
 
   // Function removed as we only allow deployment on Layer 4 with explicit tile selection
-  
+
   // Get the appropriate GIF for each stat type
   const getGifForStat = (statKey: string): string => {
     switch (statKey) {
@@ -279,12 +272,12 @@ const MainGame: React.FC = () => {
         return '';
     }
   };
-  
+
   // Render stat card with GIF on the left side only
   const renderStatCard = (label: string, value: number) => {
     const formattedLabel = label.replace(/([A-Z])/g, ' $1').trim();
     const gifSrc = getGifForStat(label);
-    
+
     return (
       <Card key={label} className="stats-card">
         <div className="stats-container">
@@ -308,7 +301,7 @@ const MainGame: React.FC = () => {
   const getTileBackgroundImage = () => {
     return `/tile_${currentLayer}.png`;
   };
-  
+
   // Transaction event colors
   const eventColors: { [key: string]: string } = {
     BombFound: '#FF4C4C',
@@ -320,14 +313,14 @@ const MainGame: React.FC = () => {
   // Render the tile content based on its state
   const renderTileContent = (index: number) => {
     if (currentLayer !== 4) return null;
-    
+
     const tileRange = calculateTileRangeForCurrentView();
     if (!tileRange) return null;
-    
+
     const tilePosition = Number(tileRange.split('-')[0]) + index;
     const tileLocation = tilePosition.toString();
     const tileState = tileStates[tileLocation];
-    
+
     if (tileState === 'diamond') {
       return <img src="/diamond.gif" alt="diamond" className="tile-overlay-gif" />;
     } else if (tileState === 'bomb') {
@@ -336,7 +329,7 @@ const MainGame: React.FC = () => {
       return <img src="/hammer.gif" alt="nuke" className="tile-overlay-gif" />;
       // Optional: show something for empty mined tiles
     }
-    
+
     // Default: unmined or unknown state
     return null;
   };
@@ -344,24 +337,37 @@ const MainGame: React.FC = () => {
   return (
     <div className="app-container">
       <div className="header">
-        <h1>Gridy</h1>
-        <div>
-          <Button 
+        <h1 style={{ marginLeft: '0.5rem' }}>Gridy</h1>
+
+        {/* Right side buttons */}
+        <div className="header-buttons" style={{ marginRight: '0.5rem' }}>
+          {/* 1) L1 Connect (EVM) */}
+          <L1Connector />
+
+          {/* 2) L2 Connect (Starknet) */}
+          <WalletConnector
+            onConnect={handleWalletConnect}
+            onDisconnect={handleWalletDisconnect}
+            isConnected={!!walletAddress}
+            connectedAddress={walletAddress || undefined}
+            connectedProvider={walletProvider || undefined}
+          />
+
+          {/* 3) L1→L3 Bridge */}
+          <L1BridgeUI />
+
+          {/* 4) Deploy Bot button */}
+          <Button
             onClick={async () => {
               if (!walletAccount || !walletAddress) {
                 setShowErrorPopup(true);
                 return;
               }
-
-              // Only allow deployment on layer 4
               if (currentLayer !== 4) {
-                alert("You can only deploy bots on Layer 4. Please navigate to Layer 4 and click on a specific tile.");
+                alert("You must be on Layer 4 to deploy a bot. Click deeper!");
                 return;
               }
-              
-              // When on layer 4, instruct to click on a specific tile
-              alert("Please click on a specific tile to deploy your bot.");
-              return;
+              alert("Click a tile in Layer 4 to deploy your bot.");
             }}
             bg="#4CAF50"
             textColor="#ffffff"
@@ -371,19 +377,8 @@ const MainGame: React.FC = () => {
             Deploy Bot
           </Button>
 
-          {showErrorPopup && (
-            <Popup
-              title="Wallet Not Connected"
-              onClose={() => setShowErrorPopup(false)}
-              isOpen={showErrorPopup}
-            >
-              <p style={{ color: "red" }}>
-                ⚠️ Please connect your wallet before deploying a bot.
-              </p>
-            </Popup>
-          )}
-          
-          <Button 
+          {/* 5) RULES */}
+          <Button
             bg="#ffffff"
             textColor="#000000"
             borderColor="#000000"
@@ -391,16 +386,21 @@ const MainGame: React.FC = () => {
           >
             RULES
           </Button>
-          
-          <WalletConnector 
-            onConnect={handleWalletConnect}
-            onDisconnect={handleWalletDisconnect}
-            isConnected={!!walletAddress}
-            connectedAddress={walletAddress || undefined}
-            connectedProvider={walletProvider || undefined}
-          />
         </div>
       </div>
+
+      {/* If the user tries to deploy a bot without connecting L2 */}
+      {showErrorPopup && (
+        <Popup
+          title="Wallet Not Connected"
+          onClose={() => setShowErrorPopup(false)}
+          isOpen={showErrorPopup}
+        >
+          <p style={{ color: 'red' }}>
+            ⚠️ Please connect your Starknet wallet before deploying a bot.
+          </p>
+        </Popup>
+      )}
 
       <div className="stats-container">
         {Object.entries(stats).map(([label, value]) => renderStatCard(label, value as number))}
