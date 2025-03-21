@@ -3,7 +3,7 @@ import { Contract, Account } from "starknet";
 // Replace with actual contract addresses
 const BRIDGE_ADDRESS = "0x68a7cf80bd038300bc7455f8d12b07442a2b08694e173d26c48c77495e23fd4";
 const GRIDY_CONTRACT_ADDRESS = "0x61dabf5527d64169587abaf0aaf489dd49e542defed2ee962e6c96fb6b64618";
-const l3Registry = "0x4407329ceb7c8ba43f74e9f89d84a7c44ec46835bbc5337aa82f0aa41ae1368";
+const l3Registry = "0x23f6fd19e1d2688818c1e097e7365c7f5c6afd272b42c08f89e7f9580497467";
 const gridTokenAddress = "0x03821bdc7aaa3c501cc6bba524ecfe79937692b74417bb6f996593c6b065cbe1";
 
 

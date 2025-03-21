@@ -1,19 +1,15 @@
 import { parseAbi } from 'viem';
-import { prepareWriteContract, writeContract } from 'wagmi/actions';
+import { prepareWriteContract, writeContract, waitForTransaction } from 'wagmi/actions';
 import { sepolia } from 'wagmi/chains';
-
-const L1_TOKEN_ADDRESS = import.meta.env.VITE_L1_TOKEN_ADDRESS as `0x${string}`;
-const L1_BRIDGE_ADDRESS = import.meta.env.VITE_L1_BRIDGE_ADDRESS as `0x${string}`;
-const L2_REGISTRY = import.meta.env.VITE_L2_REGISTRY as string;
-const DEFAULT_DEPOSIT_AMOUNT = BigInt(import.meta.env.VITE_DEFAULT_DEPOSIT_AMOUNT || '1000000000000000');
-const DEFAULT_DEPOSIT_VALUE = BigInt(import.meta.env.VITE_DEPOSIT_VALUE || '10000000000000000');
+import {
+  L1_TOKEN_ADDRESS,
+  L1_BRIDGE_ADDRESS,
+  L2_REGISTRY,
+  DEFAULT_DEPOSIT_VALUE,
+} from '../config/constants';
 
 const tokenAbi = parseAbi([
   'function approve(address spender, uint256 amount) returns (bool)',
-]);
-
-const depositAbi = parseAbi([
-  'function deposit(address token, uint256 amount, uint256 l2Recipient) external payable',
 ]);
 
 const depositWithMessageAbi = parseAbi([
@@ -21,63 +17,36 @@ const depositWithMessageAbi = parseAbi([
 ]);
 
 /**
- * Approves the L1 bridging contract to spend user's ERC20 tokens.
+ * Deploy a bot from L1 → L2 → L3 by bridging tokens.
+ * 
+ * 1. Approve the bridging contract
+ * 2. depositWithMessage (which triggers bridging & bot creation)
+ *
+ * @param userAddress L1 wallet address
+ * @param amount The bridging amount in wei
+ * @param tileLocation e.g. the tile index
+ * @returns The final deposit transaction hash
  */
-export async function approveBridge(amount: bigint = DEFAULT_DEPOSIT_AMOUNT) {
-  const config = await prepareWriteContract({
+export async function deployBotFromL1(
+  userAddress: `0x${string}`,
+  amount: bigint,
+  tileLocation: bigint
+): Promise<`0x${string}`> {
+  // 1) Approve
+  const approveConfig = await prepareWriteContract({
     address: L1_TOKEN_ADDRESS,
     abi: tokenAbi,
     functionName: 'approve',
     args: [L1_BRIDGE_ADDRESS, amount],
     chainId: sepolia.id,
   });
-  const { hash } = await writeContract(config);
-  return hash;
-}
+  const { hash: approveTx } = await writeContract(approveConfig);
+  await waitForTransaction({ hash: approveTx });
 
-/**
- * Calls deposit on the L1 bridging contract (no message).
- * 
- * @param amount  How many tokens to deposit.
- */
-export async function depositTokens(
-  amount: bigint = DEFAULT_DEPOSIT_AMOUNT,
-) {
-  // Build the parameters and call deposit(...)
-  const config = await prepareWriteContract({
-    address: L1_BRIDGE_ADDRESS,
-    abi: depositAbi,
-    functionName: 'deposit',
-    args: [
-      L1_TOKEN_ADDRESS,     // address token
-      amount,               // uint256 amount
-      BigInt("0x0463A5a7D814c754E6C3c10f9De8024B2bdF20eb56aD5168076636A858402D7e"),  // uint256 L2 Address
-    ],
-    value: DEFAULT_DEPOSIT_VALUE,
-    chainId: sepolia.id,
-  });
-
-  // Execute the transaction
-  const { hash } = await writeContract(config);
-  return hash;
-}
-
-/**
- * Calls depositWithMessage on the L1 bridging contract.
- * 
- * @param playerL1Address The user’s connected L1 address (e.g. “0xB9A2248C...”).
- * @param amount          How many tokens to deposit.
- * @param tileLocation    Additional data for bridging; e.g. tile index.
- */
-export async function depositTokensWithMessage(
-  playerL1Address: `0x${string}`, 
-  amount: bigint = DEFAULT_DEPOSIT_AMOUNT,
-  tileLocation: bigint = 1n,
-) {
-  const bigIntAddress = BigInt(playerL1Address);
-  const message = [bigIntAddress, tileLocation];
-
-  const config = await prepareWriteContract({
+  // 2) depositWithMessage
+  //  The bridging logic will pass tileLocation to L2→L3 
+  //  so the bot is launched at tileLocation.
+  const depositConfig = await prepareWriteContract({
     address: L1_BRIDGE_ADDRESS,
     abi: depositWithMessageAbi,
     functionName: 'depositWithMessage',
@@ -85,12 +54,14 @@ export async function depositTokensWithMessage(
       L1_TOKEN_ADDRESS,
       amount,
       BigInt(L2_REGISTRY),
-      message,
+      [ BigInt(userAddress), tileLocation ],
     ],
+    // You might need to pass some ETH value for bridging:
     value: DEFAULT_DEPOSIT_VALUE,
     chainId: sepolia.id,
   });
+  const { hash: depositTx } = await writeContract(depositConfig);
+  await waitForTransaction({ hash: depositTx });
 
-  const { hash } = await writeContract(config);
-  return hash;
+  return depositTx;
 }

@@ -1,15 +1,33 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { Button, Card, Popup } from 'pixel-retroui';
-import WalletConnector from './WalletConnector';
-import { depositWithMessage } from "./Bridge";
-import './styles.css';
-import { useAccount } from "@starknet-react/core";
+"use client";
+import React, { useEffect, useState, useRef } from "react";
+import { Button, Card, Popup } from "pixel-retroui";
+import { useAccount as useStarknetAccount } from "@starknet-react/core";
+import { useAccount as useWagmiAccount } from "wagmi";
 import { Account } from "starknet";
-import L1Connector from './connectors/L1Connector';
-import L1BridgeUI from './connectors/L1BridgeUI';
 
+import L1Connector from "./connectors/L1Connector";
+import WalletConnector from "./WalletConnector"; // L2 starknet connector
+
+import { deployBotFromL1 } from "./connectors/L1Bridge";
+import { deployBotFromL2 } from "./connectors/L2Bridge";
+import { checkL1Balance, checkL2Balance } from "./utils/balanceChecks";
+
+import {
+  L1_TOKEN_ADDRESS,
+  L2_TOKEN_ADDRESS,
+  REQUIRED_BOT_DEPLOY_AMOUNT,
+} from "./config/constants";
+
+import RetroLoadingOverlay from "./components/RetroLoadingOverlay";
+import "./styles.css";
+
+/**
+ * MainGame: The primary "Gridy" game with layering and bridging on tile click
+ */
 const MainGame: React.FC = () => {
-  // State management
+  // ------------------------------
+  // 1) WebSocket references & Data
+  // ------------------------------
   const [transactions, setTransactions] = useState<any[]>([]);
   const [stats, setStats] = useState({
     totalPlayers: 0,
@@ -19,45 +37,60 @@ const MainGame: React.FC = () => {
     botsDead: 0,
     totalTilesMined: 0,
   });
-
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
+
+  const transactionWSRef = useRef<WebSocket | null>(null);
+  const statsWSRef = useRef<WebSocket | null>(null);
+  const tilesWSRef = useRef<WebSocket | null>(null);
+
+  // ------------------------------
+  // 2) Game & Layering State
+  // ------------------------------
   const [currentLayer, setCurrentLayer] = useState(1);
   const [selectedTiles, setSelectedTiles] = useState<number[]>([]);
   const [hoveredTile, setHoveredTile] = useState<number | null>(null);
   const [tileStates, setTileStates] = useState<Record<string, string>>({});
   const [transitioning, setTransitioning] = useState(false);
 
-  // WebSocket references
-  const transactionWSRef = useRef<WebSocket | null>(null);
-  const statsWSRef = useRef<WebSocket | null>(null);
-  const tilesWSRef = useRef<WebSocket | null>(null);
-
-  // Wallet state
-  const { account, address } = useAccount();
+  // ------------------------------
+  // 3) Wallet States & bridging UI
+  // ------------------------------
+  // L2 starknet
+  const { account: starknetAccount } = useStarknetAccount();
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [walletProvider, setWalletProvider] = useState<string | null>(null);
   const [walletAccount, setWalletAccount] = useState<Account | null>(null);
+
+  // L1 wagmi
+  const { address: l1Address, isConnected: isL1Connected } = useWagmiAccount();
+
+  // Loading states for bridging
+  const [isDeploying, setIsDeploying] = useState(false);
+  const [deployError, setDeployError] = useState<string | null>(null);
+  const [deployTxHash, setDeployTxHash] = useState<string | null>(null);
+
+  // If user attempts to deploy a bot with no wallet
   const [showErrorPopup, setShowErrorPopup] = useState(false);
 
-  // Set up WebSocket connections
+  // ------------------------------
+  // 4) UseEffects: WebSocket Setup
+  // ------------------------------
   useEffect(() => {
-    // Transaction WebSocket
     transactionWSRef.current = new WebSocket(import.meta.env.VITE_WS_TRANSACTION_URL);
     transactionWSRef.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      if (data.type === 'transactions') {
+      if (data.type === "transactions") {
         setTransactions((prev) => {
-          let updatedTransactions = [...data.data, ...prev];
-          return updatedTransactions.slice(0, 30); // Keep only most recent 30
+          const updated = [...data.data, ...prev];
+          return updated.slice(0, 30); // keep most recent 30
         });
       }
     };
 
-    // Stats WebSocket
     statsWSRef.current = new WebSocket(import.meta.env.VITE_WS_STATS_URL);
     statsWSRef.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      if (data.type === 'stats') {
+      if (data.type === "stats") {
         setStats({
           totalPlayers: data.data.totalPlayers,
           deployedBots: data.data.totalBots,
@@ -70,10 +103,8 @@ const MainGame: React.FC = () => {
       }
     };
 
-    // Tiles WebSocket - connect but handle messages in a separate useEffect
-    tilesWSRef.current = new WebSocket(import.meta.env.VITE_WS_TILES_URL || 'ws://localhost:3003');
+    tilesWSRef.current = new WebSocket(import.meta.env.VITE_WS_TILES_URL);
 
-    // Clean up function
     return () => {
       transactionWSRef.current?.close();
       statsWSRef.current?.close();
@@ -81,93 +112,74 @@ const MainGame: React.FC = () => {
     };
   }, []);
 
-  // Handle tile data WebSocket messaging
+  // ------------------------------
+  // 5) Tiles WebSocket: handle tileData
+  // ------------------------------
   useEffect(() => {
     if (!tilesWSRef.current) return;
 
-    // Function to convert hex to decimal
     const hexToDecimal = (hex: string): string => {
-      if (hex.startsWith('0x')) {
+      if (hex.startsWith("0x")) {
         return parseInt(hex, 16).toString();
       }
       return hex;
     };
 
-    // Handle tile data messages
     const handleMessage = (event: MessageEvent) => {
       const data = JSON.parse(event.data);
-
-      if (data.type === 'tileData') {
-        // Process the tile data
+      if (data.type === "tileData") {
         const newTileStates: Record<string, string> = { ...tileStates };
-
         data.data.forEach((tile: any) => {
-          // Convert hex location to decimal for consistent lookups
-          const decimalLocation = hexToDecimal(tile.location);
-          console.log(`Tile ${tile.location} (decimal: ${decimalLocation}) is ${tile.mine_type.toLowerCase()}`);
-
-          // Store tile state with decimal location as the key
-          newTileStates[decimalLocation] = tile.mine_type.toLowerCase(); // 'Diamond', 'Bomb', or 'Empty'
+          const decimalLoc = hexToDecimal(tile.location);
+          newTileStates[decimalLoc] = tile.mine_type.toLowerCase();
         });
-
-        console.log("Updated tile states:", newTileStates);
         setTileStates(newTileStates);
       }
     };
 
-    // Set up the message handler
     tilesWSRef.current.onmessage = handleMessage;
-
-    // Clean up function
     return () => {
       if (tilesWSRef.current) {
         tilesWSRef.current.onmessage = null;
       }
     };
-  }, []); // Empty dependency array to avoid re-creating the handler
+  }, [tileStates]);
 
   // Request tile data when we enter Layer 4
   useEffect(() => {
-    console.log(`Tiles WS state: ${tilesWSRef.current?.readyState}`)
-    console.log(`WebSocket.OPEN: ${WebSocket.OPEN}`)
     if (currentLayer === 4 && tilesWSRef.current?.readyState === WebSocket.OPEN) {
       const tileRange = calculateTileRangeForCurrentView();
-
       if (tileRange) {
-        // Request the data for the current view
-        tilesWSRef.current.send(JSON.stringify({
-          action: 'viewTiles',
-          layer: currentLayer,
-          tileRange: tileRange
-        }));
-
-        console.log(`Requested tile data for range: ${tileRange}`);
+        tilesWSRef.current.send(
+          JSON.stringify({
+            action: "viewTiles",
+            layer: currentLayer,
+            tileRange: tileRange,
+          })
+        );
       }
     }
   }, [currentLayer, selectedTiles]);
 
-  // Calculate the range of tiles currently visible in Layer 4
+  // ------------------------------
+  // 6) Helper: Range for layer 4
+  // ------------------------------
   const calculateTileRangeForCurrentView = () => {
     if (currentLayer !== 4 || selectedTiles.length < 3) return null;
-
     let startIndex = 0;
     selectedTiles.forEach((tile, i) => {
-      const multiplier = [200000, 2000, 20][i];
+      const multiplier = [200000, 2000, 20][i]; // example from your code
       startIndex += tile * multiplier;
     });
-
     const rangeStart = startIndex + 1;
     const rangeEnd = startIndex + 20; // 20 tiles in layer 4
-
     return `${rangeStart}-${rangeEnd}`;
   };
 
-  // Calculate range for hovered tile
+  // For hovered tile
   const calculateTileRange = () => {
     if (hoveredTile === null) return null;
-
     const baseRange = [200000, 2000, 20, 1][currentLayer - 1];
-
     let startIndex = 0;
     if (selectedTiles.length > 0) {
       selectedTiles.forEach((tile, i) => {
@@ -175,16 +187,17 @@ const MainGame: React.FC = () => {
         startIndex += tile * multiplier;
       });
     }
-
     const rangeStart = startIndex + hoveredTile * baseRange + 1;
     const rangeEnd = rangeStart + baseRange - 1;
-
     return `${rangeStart}-${rangeEnd}`;
   };
 
-  // Handle tile click navigation
+  // ------------------------------
+  // 7) Tile Click Navigation
+  // ------------------------------
   const handleTileClick = (index: number) => {
     if (currentLayer < 4) {
+      // "zoom in" to next layer
       setTransitioning(true);
       setTimeout(() => {
         setSelectedTiles((prev) => [...prev, index]);
@@ -192,26 +205,23 @@ const MainGame: React.FC = () => {
         setTransitioning(false);
       }, 500);
     } else if (currentLayer === 4) {
-      // Deploy a bot on the tile if it's not already mined
+      // Deploy a bot here
       const tileRange = calculateTileRangeForCurrentView();
       if (!tileRange) return;
-
-      const tilePosition = Number(tileRange.split('-')[0]) + index;
+      const tilePosition = Number(tileRange.split("-")[0]) + index;
       const tileLocation = tilePosition.toString();
-      console.log(`Clicked on tile location: ${tileLocation}`);
 
-      // Check if the tile has already been mined
-      if (tileStates[tileLocation] && tileStates[tileLocation] !== 'unmined') {
-        alert('This tile has already been mined!');
+      // If tile is already mined
+      if (tileStates[tileLocation] && tileStates[tileLocation] !== "unmined") {
+        alert("This tile has already been mined!");
         return;
       }
 
-      // Handle bot deployment
       handleDeployBot(tileLocation);
     }
   };
 
-  // Handle back navigation
+  // "Back" button
   const handleBack = () => {
     if (currentLayer > 1) {
       setTransitioning(true);
@@ -223,26 +233,53 @@ const MainGame: React.FC = () => {
     }
   };
 
-  const handleDeployBot = async (tileLocation: string) => {
-    if (!walletAccount || !walletAddress) {
+  // ------------------------------
+  // 8) Deploy Bot Logic (Tile Click)
+  // ------------------------------
+  async function handleDeployBot(tileLocation: string) {
+    setDeployError(null);
+    setDeployTxHash(null);
+
+    // Are we on L2 or L1?
+    if (!walletAccount && !isL1Connected) {
+      // No wallet
       setShowErrorPopup(true);
       return;
     }
+
+    setIsDeploying(true);
     try {
-      const txHash = await depositWithMessage(walletAccount, walletAddress, tileLocation);
-      alert(`Bot deployed to tile ${tileLocation}! TX Hash: ${txHash}`);
-    } catch (err) {
-      console.error(err);
-      alert("Deployment failed, see console for details.");
+      if (walletAccount) {
+        // L2 route
+        await checkL2Balance(walletAccount, L2_TOKEN_ADDRESS, REQUIRED_BOT_DEPLOY_AMOUNT);
+        const txHash = await deployBotFromL2(walletAccount, walletAccount.address, tileLocation);
+        setDeployTxHash(txHash);
+        alert(`Bot deployed to tile ${tileLocation} from L2. TX: ${txHash}`);
+      } else if (isL1Connected && l1Address) {
+        // L1 route
+        await checkL1Balance(l1Address, L1_TOKEN_ADDRESS, REQUIRED_BOT_DEPLOY_AMOUNT);
+        const tileLocBig = BigInt(tileLocation);
+        const depositHash = await deployBotFromL1(
+          l1Address as `0x${string}`,
+          REQUIRED_BOT_DEPLOY_AMOUNT,
+          tileLocBig
+        );
+        setDeployTxHash(depositHash);
+        alert(`Bot deployed to tile ${tileLocation} from L1. TX: ${depositHash}`);
+      }
+    } catch (err: any) {
+      console.error("Deploy error:", err);
+      setDeployError(err.message || String(err));
+    } finally {
+      setIsDeploying(false);
     }
-  };
+  }
 
   // Called when L2 wallet is connected
   const handleWalletConnect = (newAddress: string, provider: string) => {
-    console.log("Starknet wallet connected:", newAddress, "Provider:", provider);
     setWalletAddress(newAddress);
     setWalletProvider(provider);
-    setWalletAccount(window.starknet?.account || account);
+    setWalletAccount(window.starknet?.account || starknetAccount || null);
   };
   // Called when L2 wallet is disconnected
   const handleWalletDisconnect = () => {
@@ -251,40 +288,38 @@ const MainGame: React.FC = () => {
     setWalletAccount(null);
   };
 
-  // Function removed as we only allow deployment on Layer 4 with explicit tile selection
-
-  // Get the appropriate GIF for each stat type
+  // ------------------------------
+  // 9) Stat Cards & Leaderboard
+  // ------------------------------
   const getGifForStat = (statKey: string): string => {
     switch (statKey) {
-      case 'totalPlayers':
-        return '/mario.gif';
-      case 'deployedBots':
-        return '/hammer.gif';
-      case 'botsAlive':
-        return '/heart.gif';
-      case 'botsDead':
-        return '/skull.gif';
-      case 'diamondsMined':
-        return '/diamond.gif';
-      case 'totalTilesMined':
-        return '/mining.gif';
+      case "totalPlayers":
+        return "/mario.gif";
+      case "deployedBots":
+        return "/hammer.gif";
+      case "botsAlive":
+        return "/heart.gif";
+      case "botsDead":
+        return "/skull.gif";
+      case "diamondsMined":
+        return "/diamond.gif";
+      case "totalTilesMined":
+        return "/mining.gif";
       default:
-        return '';
+        return "";
     }
   };
 
-  // Render stat card with GIF on the left side only
   const renderStatCard = (label: string, value: number) => {
-    const formattedLabel = label.replace(/([A-Z])/g, ' $1').trim();
+    const formattedLabel = label.replace(/([A-Z])/g, " $1").trim();
     const gifSrc = getGifForStat(label);
-
     return (
       <Card key={label} className="stats-card">
         <div className="stats-container">
           <div className="gif-container">
             <img src={gifSrc} alt={formattedLabel} className="stat-gif" />
           </div>
-          <div className="stats-content">
+          <div>
             <span className="stats-label">{formattedLabel}</span>
             <div className="stats-value">{value}</div>
           </div>
@@ -293,57 +328,48 @@ const MainGame: React.FC = () => {
     );
   };
 
-  // Grid layout parameters
+  // ------------------------------
+  // 10) Grid & Render
+  // ------------------------------
+  // For layer <4, NxN grid; for layer=4, 20 tiles
   const effectiveSize = currentLayer === 4 ? 4 : 10;
   const tiles = Array(currentLayer === 4 ? 20 : effectiveSize * effectiveSize).fill(null);
   const tileSizeWidth = currentLayer === 4 ? 110 : 43;
   const tileSizeHeight = currentLayer === 4 ? 95 : 43;
-  const getTileBackgroundImage = () => {
-    return `/tile_${currentLayer}.png`;
-  };
 
-  // Transaction event colors
   const eventColors: { [key: string]: string } = {
-    BombFound: '#FF4C4C',
-    TileAlreadyMined: '#E6B800',
-    DiamondFound: '#4CAF50',
-    TileMined: '#2196F3',
+    BombFound: "#FF4C4C",
+    TileAlreadyMined: "#E6B800",
+    DiamondFound: "#4CAF50",
+    TileMined: "#2196F3",
   };
 
-  // Render the tile content based on its state
+  // For layer=4, show overlays?
   const renderTileContent = (index: number) => {
     if (currentLayer !== 4) return null;
-
     const tileRange = calculateTileRangeForCurrentView();
     if (!tileRange) return null;
-
-    const tilePosition = Number(tileRange.split('-')[0]) + index;
+    const tilePosition = Number(tileRange.split("-")[0]) + index;
     const tileLocation = tilePosition.toString();
     const tileState = tileStates[tileLocation];
-
-    if (tileState === 'diamond') {
+    if (tileState === "diamond") {
       return <img src="/diamond.gif" alt="diamond" className="tile-overlay-gif" />;
-    } else if (tileState === 'bomb') {
+    } else if (tileState === "bomb") {
       return <img src="/nuke.gif" alt="nuke" className="tile-overlay-gif" />;
-    } else if (tileState === 'empty') {
-      return <img src="/hammer.gif" alt="nuke" className="tile-overlay-gif" />;
-      // Optional: show something for empty mined tiles
+    } else if (tileState === "empty") {
+      return <img src="/hammer.gif" alt="hammer" className="tile-overlay-gif" />;
     }
-
-    // Default: unmined or unknown state
     return null;
   };
 
   return (
     <div className="app-container">
+      {/* ------ Header ------ */}
       <div className="header">
-        <h1 style={{ marginLeft: '0.5rem' }}>Gridy</h1>
-
-        {/* Right side buttons */}
-        <div className="header-buttons" style={{ marginRight: '0.5rem' }}>
+        <h1 style={{ marginLeft: "0.5rem" }}>Gridy</h1>
+        <div className="header-buttons" style={{ marginRight: "0.5rem" }}>
           {/* 1) L1 Connect (EVM) */}
           <L1Connector />
-
           {/* 2) L2 Connect (Starknet) */}
           <WalletConnector
             onConnect={handleWalletConnect}
@@ -352,76 +378,66 @@ const MainGame: React.FC = () => {
             connectedAddress={walletAddress || undefined}
             connectedProvider={walletProvider || undefined}
           />
-
-          {/* 3) L1→L3 Bridge */}
-          <L1BridgeUI />
-
-          {/* 4) Deploy Bot button */}
-          <Button
-            onClick={async () => {
-              if (!walletAccount || !walletAddress) {
-                setShowErrorPopup(true);
-                return;
-              }
-              if (currentLayer !== 4) {
-                alert("You must be on Layer 4 to deploy a bot. Click deeper!");
-                return;
-              }
-              alert("Click a tile in Layer 4 to deploy your bot.");
-            }}
-            bg="#4CAF50"
-            textColor="#ffffff"
-            borderColor="#000000"
-            shadow="#ffffff"
-          >
-            Deploy Bot
-          </Button>
-
-          {/* 5) RULES */}
-          <Button
-            bg="#ffffff"
-            textColor="#000000"
-            borderColor="#000000"
-            shadow="#ffffff"
-          >
-            RULES
-          </Button>
         </div>
       </div>
 
-      {/* If the user tries to deploy a bot without connecting L2 */}
+      {/* If bridging in progress -> RetroLoadingOverlay */}
+      {isDeploying && (
+        <RetroLoadingOverlay
+          message="Deploying your bot..."
+          progress={75}
+        />
+      )}
+
+      {/* If user tries to deploy without a wallet */}
       {showErrorPopup && (
         <Popup
           title="Wallet Not Connected"
           onClose={() => setShowErrorPopup(false)}
           isOpen={showErrorPopup}
         >
-          <p style={{ color: 'red' }}>
-            ⚠️ Please connect your Starknet wallet before deploying a bot.
+          <p style={{ color: "red" }}>
+            ⚠️ Please connect either an L1 or L2 wallet before deploying a bot.
           </p>
         </Popup>
       )}
 
+      {/* If bridging error occurs */}
+      {deployError && (
+        <Popup
+          title="Deployment Error"
+          onClose={() => setDeployError(null)}
+          isOpen={!!deployError}
+        >
+          <p style={{ color: "red" }}>{deployError}</p>
+        </Popup>
+      )}
+
+      {/* Stats row */}
       <div className="stats-container">
-        {Object.entries(stats).map(([label, value]) => renderStatCard(label, value as number))}
+        {Object.entries(stats).map(([label, value]) =>
+          renderStatCard(label, value as number)
+        )}
       </div>
 
+      {/* Main content: Left sidebar, Grid, Right sidebar */}
       <div className="main-content">
+        {/* Left: Transactions */}
         <Card className="sidebar">
           <h3 className="sidebar-title">Transactions</h3>
           <ul className="transaction-list">
             {transactions.map((tx, index) => {
-              const botAddress = tx.data[0] ? `${tx.data[0].slice(0, 6)}...${tx.data[0].slice(-4)}` : "Unknown";
-              let message = `${tx.event_name} - ${botAddress}`;
-
-              if (tx.event_name === "TileMined") {
-                message += " - 10 Points";
-              } else if (tx.event_name === "DiamondFound") {
-                message += " - 5000 Points";
-              }
-
+              const botAddr = tx.data[0]
+                ? `${tx.data[0].slice(0, 6)}...${tx.data[0].slice(-4)}`
+                : "Unknown";
+              let message = `${tx.event_name} - ${botAddr}`;
+              if (tx.event_name === "TileMined") message += " - 10 pts";
+              else if (tx.event_name === "DiamondFound") message += " - 5000 pts";
               return (
-                <li key={index} style={{ color: eventColors[tx.event_name] || "#FFFFFF" }}>
+                <li
+                  key={index}
+                  style={{ color: eventColors[tx.event_name] || "#FFF" }}
+                >
                   {message}
                 </li>
               );
@@ -429,24 +445,30 @@ const MainGame: React.FC = () => {
           </ul>
         </Card>
 
-        <div className={`grid-section ${transitioning ? 'fade-out' : 'fade-in'}`}>
+        {/* Center grid */}
+        <div className={`grid-section ${transitioning ? "fade-out" : "fade-in"}`}>
           {currentLayer > 1 && (
             <Button onClick={handleBack}>← Back to Layer {currentLayer - 1}</Button>
           )}
 
-          <div className="grid-container" style={{ gridTemplateColumns: `repeat(${effectiveSize}, 0.5fr)` }}>
+          <div
+            className="grid-container"
+            style={{
+              gridTemplateColumns: `repeat(${effectiveSize}, 0.5fr)`,
+            }}
+          >
             {tiles.map((_, index) => (
               <div
                 key={index}
                 className="tile"
                 style={{
-                  backgroundImage: `url('${getTileBackgroundImage()}')`,
-                  backgroundSize: 'cover',
-                  backgroundPosition: 'center',
+                  backgroundImage: `url('/tile_${currentLayer}.png')`,
+                  backgroundSize: "cover",
+                  backgroundPosition: "center",
                   height: tileSizeHeight,
                   width: tileSizeWidth,
-                  border: '3px dashed black',
-                  position: 'relative',
+                  border: "3px dashed black",
+                  position: "relative",
                 }}
                 onMouseEnter={() => setHoveredTile(index)}
                 onMouseLeave={() => setHoveredTile(null)}
@@ -460,18 +482,21 @@ const MainGame: React.FC = () => {
           <div className="hover-info">
             {hoveredTile !== null && (
               <>
-                Layer {currentLayer} . {tiles.length} tiles visible . Tile {hoveredTile + 1} represents tiles from ({calculateTileRange()})
+                Layer {currentLayer} . {tiles.length} tiles . Tile{" "}
+                {hoveredTile + 1} → ({calculateTileRange()})
               </>
             )}
           </div>
         </div>
 
+        {/* Right: Leaderboard */}
         <Card className="sidebar">
           <h3 className="sidebar-title">Leaderboard</h3>
           <ul className="leaderboard-list">
             {leaderboard.map((player, index) => (
               <li key={index}>
-                {index + 1}. {player.total_score} points - {player._id.slice(0, 14)}...{player._id.slice(-14)}
+                {index + 1}. {player.total_score} pts -{" "}
+                {player._id.slice(0, 14)}...{player._id.slice(-14)}
               </li>
             ))}
           </ul>
