@@ -4,6 +4,7 @@ export const L1_BRIDGE_ADDRESS = import.meta.env.VITE_L1_BRIDGE_ADDRESS as `0x${
 export const L2_BRIDGE_ADDRESS = import.meta.env.VITE_L2_BRIDGE_ADDRESS as `0x${string}`;
 export const L2_REGISTRY = import.meta.env.VITE_L2_REGISTRY as string;
 export const L3_REGISTRY = import.meta.env.VITE_L3_REGISTRY as string;
+export const GAME_CONTRACT_ADDRESS = import.meta.env.VITE_L3_GAME_ADDRESS as string;
 
 export const DEFAULT_DEPOSIT_AMOUNT = BigInt(
   import.meta.env.VITE_DEFAULT_DEPOSIT_AMOUNT || '1000000000000000'

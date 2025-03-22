@@ -1,13 +1,11 @@
 "use client";
 import React, { useEffect, useState, useRef } from "react";
-import { Button, Card, Popup } from "pixel-retroui";
+import { Button, Card, Popup, ProgressBar } from "pixel-retroui";
 import { useAccount as useStarknetAccount } from "@starknet-react/core";
 import { useAccount as useWagmiAccount } from "wagmi";
-import { Account } from "starknet";
 
 import L1Connector from "./connectors/L1Connector";
-import WalletConnector from "./WalletConnector"; // L2 starknet connector
-
+import WalletConnector from "./WalletConnector"; 
 import { deployBotFromL1 } from "./connectors/L1Bridge";
 import { deployBotFromL2 } from "./connectors/L2Bridge";
 import { checkL1Balance, checkL2Balance } from "./utils/balanceChecks";
@@ -16,18 +14,20 @@ import {
   L1_TOKEN_ADDRESS,
   L2_TOKEN_ADDRESS,
   REQUIRED_BOT_DEPLOY_AMOUNT,
+  GAME_CONTRACT_ADDRESS,
 } from "./config/constants";
 
 import RetroLoadingOverlay from "./components/RetroLoadingOverlay";
+import { fetchPlayerBots } from "./connectors/gameConnector";
 import "./styles.css";
 
 /**
- * MainGame: The primary "Gridy" game with layering and bridging on tile click
+ * MainGame: The primary "Gridy" game with bridging, My Bots, & TX filtering
  */
 const MainGame: React.FC = () => {
-  // ------------------------------
-  // 1) WebSocket references & Data
-  // ------------------------------
+  // ------------------------------------------
+  // 1) WebSockets for transactions/stats/tiles
+  // ------------------------------------------
   const [transactions, setTransactions] = useState<any[]>([]);
   const [stats, setStats] = useState({
     totalPlayers: 0,
@@ -43,50 +43,72 @@ const MainGame: React.FC = () => {
   const statsWSRef = useRef<WebSocket | null>(null);
   const tilesWSRef = useRef<WebSocket | null>(null);
 
-  // ------------------------------
-  // 2) Game & Layering State
-  // ------------------------------
-  const [currentLayer, setCurrentLayer] = useState(1);
+  // ------------------------------------------
+  // 2) Game layering & tile states
+  // ------------------------------------------
+  const [currentLayer, setCurrentLayer] = useState<number>(1);
   const [selectedTiles, setSelectedTiles] = useState<number[]>([]);
   const [hoveredTile, setHoveredTile] = useState<number | null>(null);
   const [tileStates, setTileStates] = useState<Record<string, string>>({});
   const [transitioning, setTransitioning] = useState(false);
 
-  // ------------------------------
-  // 3) Wallet States & bridging UI
-  // ------------------------------
+  // ------------------------------------------
+  // 3) Wallet states (L1 or L2)
+  // ------------------------------------------
   // L2 starknet
   const { account: starknetAccount } = useStarknetAccount();
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [walletProvider, setWalletProvider] = useState<string | null>(null);
-  const [walletAccount, setWalletAccount] = useState<Account | null>(null);
+  const [walletAccount, setWalletAccount] = useState<any | null>(null);
 
   // L1 wagmi
   const { address: l1Address, isConnected: isL1Connected } = useWagmiAccount();
 
-  // Loading states for bridging
+  // ------------------------------------------
+  // 4) Loading states for bridging
+  // ------------------------------------------
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deployTxHash, setDeployTxHash] = useState<string | null>(null);
-
-  // If user attempts to deploy a bot with no wallet
   const [showErrorPopup, setShowErrorPopup] = useState(false);
 
-  // ------------------------------
-  // 4) UseEffects: WebSocket Setup
-  // ------------------------------
+  // ------------------------------------------
+  // 5) My Bots
+  // ------------------------------------------
+  const [myBots, setMyBots] = useState<string[]>([]);
+  const [myBotsLoading, setMyBotsLoading] = useState<boolean>(false);
+
+  // ------------------------------------------
+  // 6) TX Filter Toggle
+  // ------------------------------------------
+  const [showMyBotsTxOnly, setShowMyBotsTxOnly] = useState(false);
+  const [isFilteringTx, setIsFilteringTx] = useState(false); // optional loader
+
+  // => Function that picks user address for bot queries
+  function getUserAddressForBots(): string | null {
+    // If L2 is connected, prefer that, else if L1 is connected, use that
+    if (walletAddress) return walletAddress;
+    if (l1Address) return l1Address;
+    return null;
+  }
+
+  // ------------------------------------------
+  // 7) WebSocket Setup
+  // ------------------------------------------
   useEffect(() => {
+    // Transaction WS
     transactionWSRef.current = new WebSocket(import.meta.env.VITE_WS_TRANSACTION_URL);
     transactionWSRef.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === "transactions") {
         setTransactions((prev) => {
           const updated = [...data.data, ...prev];
-          return updated.slice(0, 30); // keep most recent 30
+          return updated.slice(0, 80); // keep more if you want
         });
       }
     };
 
+    // Stats WS
     statsWSRef.current = new WebSocket(import.meta.env.VITE_WS_STATS_URL);
     statsWSRef.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
@@ -103,6 +125,7 @@ const MainGame: React.FC = () => {
       }
     };
 
+    // Tiles WS
     tilesWSRef.current = new WebSocket(import.meta.env.VITE_WS_TILES_URL);
 
     return () => {
@@ -112,32 +135,26 @@ const MainGame: React.FC = () => {
     };
   }, []);
 
-  // ------------------------------
-  // 5) Tiles WebSocket: handle tileData
-  // ------------------------------
+  // Tiles data handling
   useEffect(() => {
     if (!tilesWSRef.current) return;
 
-    const hexToDecimal = (hex: string): string => {
-      if (hex.startsWith("0x")) {
-        return parseInt(hex, 16).toString();
-      }
-      return hex;
-    };
-
-    const handleMessage = (event: MessageEvent) => {
+    const handleTileData = (event: MessageEvent) => {
       const data = JSON.parse(event.data);
       if (data.type === "tileData") {
         const newTileStates: Record<string, string> = { ...tileStates };
         data.data.forEach((tile: any) => {
-          const decimalLoc = hexToDecimal(tile.location);
-          newTileStates[decimalLoc] = tile.mine_type.toLowerCase();
+          // Convert hex to decimal
+          const decLoc = tile.location.startsWith("0x")
+            ? parseInt(tile.location, 16).toString()
+            : tile.location;
+          newTileStates[decLoc] = tile.mine_type.toLowerCase();
         });
         setTileStates(newTileStates);
       }
     };
 
-    tilesWSRef.current.onmessage = handleMessage;
+    tilesWSRef.current.onmessage = handleTileData;
     return () => {
       if (tilesWSRef.current) {
         tilesWSRef.current.onmessage = null;
@@ -145,7 +162,7 @@ const MainGame: React.FC = () => {
     };
   }, [tileStates]);
 
-  // Request tile data when we enter Layer 4
+  // If we're in layer 4, request tile data
   useEffect(() => {
     if (currentLayer === 4 && tilesWSRef.current?.readyState === WebSocket.OPEN) {
       const tileRange = calculateTileRangeForCurrentView();
@@ -154,75 +171,68 @@ const MainGame: React.FC = () => {
           JSON.stringify({
             action: "viewTiles",
             layer: currentLayer,
-            tileRange: tileRange,
+            tileRange,
           })
         );
       }
     }
   }, [currentLayer, selectedTiles]);
 
-  // ------------------------------
-  // 6) Helper: Range for layer 4
-  // ------------------------------
-  const calculateTileRangeForCurrentView = () => {
-    if (currentLayer !== 4 || selectedTiles.length < 3) return null;
-    let startIndex = 0;
-    selectedTiles.forEach((tile, i) => {
-      const multiplier = [200000, 2000, 20][i]; // example from your code
-      startIndex += tile * multiplier;
-    });
-    const rangeStart = startIndex + 1;
-    const rangeEnd = startIndex + 20; // 20 tiles in layer 4
-    return `${rangeStart}-${rangeEnd}`;
-  };
-
-  // For hovered tile
-  const calculateTileRange = () => {
-    if (hoveredTile === null) return null;
-    const baseRange = [200000, 2000, 20, 1][currentLayer - 1];
-    let startIndex = 0;
-    if (selectedTiles.length > 0) {
-      selectedTiles.forEach((tile, i) => {
-        const multiplier = [200000, 2000, 20, 1][i];
-        startIndex += tile * multiplier;
-      });
+  // ------------------------------------------
+  // 8) My Bots fetch
+  // ------------------------------------------
+  const refreshMyBots = async () => {
+    const userAddr = getUserAddressForBots();
+    if (!userAddr || !GAME_CONTRACT_ADDRESS) return;
+    try {
+      setMyBotsLoading(true);
+      const bots = await fetchPlayerBots(GAME_CONTRACT_ADDRESS, userAddr);
+      setMyBots(bots);
+    } catch (err) {
+      console.error("Failed to fetch My Bots:", err);
+    } finally {
+      setMyBotsLoading(false);
     }
-    const rangeStart = startIndex + hoveredTile * baseRange + 1;
-    const rangeEnd = rangeStart + baseRange - 1;
-    return `${rangeStart}-${rangeEnd}`;
   };
 
-  // ------------------------------
-  // 7) Tile Click Navigation
-  // ------------------------------
+  // On any address change, auto refresh
+  useEffect(() => {
+    if (getUserAddressForBots() && GAME_CONTRACT_ADDRESS) {
+      refreshMyBots();
+    } else {
+      setMyBots([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [l1Address, walletAddress]);
+
+  // ------------------------------------------
+  // 9) On tile click => Deploy
+  // ------------------------------------------
   const handleTileClick = (index: number) => {
     if (currentLayer < 4) {
-      // "zoom in" to next layer
       setTransitioning(true);
       setTimeout(() => {
         setSelectedTiles((prev) => [...prev, index]);
         setCurrentLayer((prev) => prev + 1);
         setTransitioning(false);
       }, 500);
-    } else if (currentLayer === 4) {
-      // Deploy a bot here
-      const tileRange = calculateTileRangeForCurrentView();
-      if (!tileRange) return;
-      const tilePosition = Number(tileRange.split("-")[0]) + index;
-      const tileLocation = tilePosition.toString();
-
-      // If tile is already mined
-      if (tileStates[tileLocation] && tileStates[tileLocation] !== "unmined") {
-        alert("This tile has already been mined!");
-        return;
-      }
-
-      handleDeployBot(tileLocation);
+      return;
     }
+    // If layer 4
+    const tileRange = calculateTileRangeForCurrentView();
+    if (!tileRange) return;
+    const tilePosition = Number(tileRange.split("-")[0]) + index;
+    const tileLocation = tilePosition.toString();
+    // If tile is already mined
+    if (tileStates[tileLocation] && tileStates[tileLocation] !== "unmined") {
+      alert("This tile has already been mined!");
+      return;
+    }
+    // Deploy
+    handleDeployBot(tileLocation);
   };
 
-  // "Back" button
-  const handleBack = () => {
+  function handleBack() {
     if (currentLayer > 1) {
       setTransitioning(true);
       setTimeout(() => {
@@ -231,18 +241,14 @@ const MainGame: React.FC = () => {
         setTransitioning(false);
       }, 500);
     }
-  };
+  }
 
-  // ------------------------------
-  // 8) Deploy Bot Logic (Tile Click)
-  // ------------------------------
   async function handleDeployBot(tileLocation: string) {
     setDeployError(null);
     setDeployTxHash(null);
 
-    // Are we on L2 or L1?
+    // if user has neither L2 nor L1
     if (!walletAccount && !isL1Connected) {
-      // No wallet
       setShowErrorPopup(true);
       return;
     }
@@ -252,9 +258,11 @@ const MainGame: React.FC = () => {
       if (walletAccount) {
         // L2 route
         await checkL2Balance(walletAccount, L2_TOKEN_ADDRESS, REQUIRED_BOT_DEPLOY_AMOUNT);
-        const txHash = await deployBotFromL2(walletAccount, walletAccount.address, tileLocation);
+        const txHash = await deployBotFromL2(walletAccount, walletAddress!, tileLocation);
         setDeployTxHash(txHash);
-        alert(`Bot deployed to tile ${tileLocation} from L2. TX: ${txHash}`);
+        alert(`Deployed bot at tile ${tileLocation} (L2). TX = ${txHash}`);
+        // refresh My Bots
+        await refreshMyBots();
       } else if (isL1Connected && l1Address) {
         // L1 route
         await checkL1Balance(l1Address, L1_TOKEN_ADDRESS, REQUIRED_BOT_DEPLOY_AMOUNT);
@@ -265,33 +273,104 @@ const MainGame: React.FC = () => {
           tileLocBig
         );
         setDeployTxHash(depositHash);
-        alert(`Bot deployed to tile ${tileLocation} from L1. TX: ${depositHash}`);
+        alert(`Deployed bot at tile ${tileLocation} (L1). TX = ${depositHash}`);
+        // If your game contract also recognizes L1 addresses as "player",
+        // refresh My Bots
+        await refreshMyBots();
       }
     } catch (err: any) {
-      console.error("Deploy error:", err);
       setDeployError(err.message || String(err));
+      console.error(err);
     } finally {
       setIsDeploying(false);
     }
   }
 
-  // Called when L2 wallet is connected
-  const handleWalletConnect = (newAddress: string, provider: string) => {
-    setWalletAddress(newAddress);
-    setWalletProvider(provider);
-    setWalletAccount(window.starknet?.account || starknetAccount || null);
-  };
-  // Called when L2 wallet is disconnected
-  const handleWalletDisconnect = () => {
-    setWalletAddress(null);
-    setWalletProvider(null);
-    setWalletAccount(null);
+  // ------------------------------------------
+  // 10) Toggling TX Filter: “All TXs” vs. “My Bots’ TXs”
+  // ------------------------------------------
+  function handleToggleTxFilter() {
+    // optional mini loader
+    setIsFilteringTx(true);
+    setTimeout(() => {
+      setShowMyBotsTxOnly(!showMyBotsTxOnly);
+      setIsFilteringTx(false);
+    }, 200);
+  }
+
+  const filteredTransactions = showMyBotsTxOnly
+    ? transactions.filter((tx) => {
+        if (!tx.data?.length) return false;
+        // If data[0] is the bot address in hex
+        const botAddr = tx.data[0].toLowerCase();
+        return myBots.some((b) => b.toLowerCase() === botAddr);
+      })
+    : transactions;
+
+  // ------------------------------------------
+  // 11) Helper tile-range
+  // ------------------------------------------
+  function calculateTileRangeForCurrentView() {
+    if (currentLayer !== 4 || selectedTiles.length < 3) return null;
+    let startIndex = 0;
+    const multipliers = [200000, 2000, 20];
+    selectedTiles.forEach((tile, i) => {
+      startIndex += tile * multipliers[i];
+    });
+    const rangeStart = startIndex + 1;
+    const rangeEnd = startIndex + 20;
+    return `${rangeStart}-${rangeEnd}`;
+  }
+
+  function calculateTileRange() {
+    if (hoveredTile === null) return null;
+    const baseRange = [200000, 2000, 20, 1][currentLayer - 1];
+    let startIndex = 0;
+    selectedTiles.forEach((tile, i) => {
+      startIndex += tile * [200000, 2000, 20, 1][i];
+    });
+    const rangeStart = startIndex + hoveredTile * baseRange + 1;
+    const rangeEnd = rangeStart + baseRange - 1;
+    return `${rangeStart}-${rangeEnd}`;
+  }
+
+  // ------------------------------------------
+  // 12) Rendering
+  // ------------------------------------------
+  const effectiveSize = currentLayer === 4 ? 4 : 10;
+  const tileCount = currentLayer === 4 ? 20 : effectiveSize * effectiveSize;
+  const tilesArr = Array(tileCount).fill(null);
+
+  const tileSizeWidth = currentLayer === 4 ? 110 : 43;
+  const tileSizeHeight = currentLayer === 4 ? 95 : 43;
+
+  const eventColors: { [key: string]: string } = {
+    BombFound: "#FF4C4C",
+    TileAlreadyMined: "#E6B800",
+    DiamondFound: "#4CAF50",
+    TileMined: "#2196F3",
   };
 
-  // ------------------------------
-  // 9) Stat Cards & Leaderboard
-  // ------------------------------
-  const getGifForStat = (statKey: string): string => {
+  function renderTileContent(index: number) {
+    if (currentLayer !== 4) return null;
+    const tileRange = calculateTileRangeForCurrentView();
+    if (!tileRange) return null;
+    const tilePosition = Number(tileRange.split("-")[0]) + index;
+    const tileLocation = tilePosition.toString();
+    const tileState = tileStates[tileLocation];
+    switch (tileState) {
+      case "diamond":
+        return <img src="/diamond.gif" alt="diamond" className="tile-overlay-gif" />;
+      case "bomb":
+        return <img src="/nuke.gif" alt="nuke" className="tile-overlay-gif" />;
+      case "empty":
+        return <img src="/hammer.gif" alt="hammer" className="tile-overlay-gif" />;
+      default:
+        return null; // unmined
+    }
+  }
+
+  function getGifForStat(statKey: string): string {
     switch (statKey) {
       case "totalPlayers":
         return "/mario.gif";
@@ -308,9 +387,8 @@ const MainGame: React.FC = () => {
       default:
         return "";
     }
-  };
-
-  const renderStatCard = (label: string, value: number) => {
+  }
+  function renderStatCard(label: string, value: number) {
     const formattedLabel = label.replace(/([A-Z])/g, " $1").trim();
     const gifSrc = getGifForStat(label);
     return (
@@ -326,70 +404,38 @@ const MainGame: React.FC = () => {
         </div>
       </Card>
     );
-  };
-
-  // ------------------------------
-  // 10) Grid & Render
-  // ------------------------------
-  // For layer <4, NxN grid; for layer=4, 20 tiles
-  const effectiveSize = currentLayer === 4 ? 4 : 10;
-  const tiles = Array(currentLayer === 4 ? 20 : effectiveSize * effectiveSize).fill(null);
-  const tileSizeWidth = currentLayer === 4 ? 110 : 43;
-  const tileSizeHeight = currentLayer === 4 ? 95 : 43;
-
-  const eventColors: { [key: string]: string } = {
-    BombFound: "#FF4C4C",
-    TileAlreadyMined: "#E6B800",
-    DiamondFound: "#4CAF50",
-    TileMined: "#2196F3",
-  };
-
-  // For layer=4, show overlays?
-  const renderTileContent = (index: number) => {
-    if (currentLayer !== 4) return null;
-    const tileRange = calculateTileRangeForCurrentView();
-    if (!tileRange) return null;
-    const tilePosition = Number(tileRange.split("-")[0]) + index;
-    const tileLocation = tilePosition.toString();
-    const tileState = tileStates[tileLocation];
-    if (tileState === "diamond") {
-      return <img src="/diamond.gif" alt="diamond" className="tile-overlay-gif" />;
-    } else if (tileState === "bomb") {
-      return <img src="/nuke.gif" alt="nuke" className="tile-overlay-gif" />;
-    } else if (tileState === "empty") {
-      return <img src="/hammer.gif" alt="hammer" className="tile-overlay-gif" />;
-    }
-    return null;
-  };
+  }
 
   return (
     <div className="app-container">
-      {/* ------ Header ------ */}
+      {/* ------------- HEADER ------------- */}
       <div className="header">
         <h1 style={{ marginLeft: "0.5rem" }}>Gridy</h1>
         <div className="header-buttons" style={{ marginRight: "0.5rem" }}>
-          {/* 1) L1 Connect (EVM) */}
           <L1Connector />
-          {/* 2) L2 Connect (Starknet) */}
           <WalletConnector
-            onConnect={handleWalletConnect}
-            onDisconnect={handleWalletDisconnect}
-            isConnected={!!walletAddress}
-            connectedAddress={walletAddress || undefined}
-            connectedProvider={walletProvider || undefined}
+            onConnect={(addr, provider) => {
+              setWalletAddress(addr);
+              setWalletProvider(provider);
+              setWalletAccount(starknetAccount);
+            }}
+            onDisconnect={() => {
+              setWalletAddress(null);
+              setWalletProvider(null);
+              setWalletAccount(null);
+              setMyBots([]);
+            }}
+            isConnected={!!(walletAddress || l1Address)}
+            connectedAddress={walletAddress || l1Address || undefined}
+            connectedProvider={walletProvider || (isL1Connected ? "Metamask/EVM" : undefined)}
           />
         </div>
       </div>
 
-      {/* If bridging in progress -> RetroLoadingOverlay */}
+      {/* ------------- OVERLAYS ------------- */}
       {isDeploying && (
-        <RetroLoadingOverlay
-          message="Deploying your bot..."
-          progress={75}
-        />
+        <RetroLoadingOverlay message="Deploying your bot..." progress={75} />
       )}
-
-      {/* If user tries to deploy without a wallet */}
       {showErrorPopup && (
         <Popup
           title="Wallet Not Connected"
@@ -397,12 +443,10 @@ const MainGame: React.FC = () => {
           isOpen={showErrorPopup}
         >
           <p style={{ color: "red" }}>
-            ⚠️ Please connect either an L1 or L2 wallet before deploying a bot.
+            ⚠️ Please connect at least one wallet (L1 or L2).
           </p>
         </Popup>
       )}
-
-      {/* If bridging error occurs */}
       {deployError && (
         <Popup
           title="Deployment Error"
@@ -413,51 +457,133 @@ const MainGame: React.FC = () => {
         </Popup>
       )}
 
-      {/* Stats row */}
+      {/* ------------- STATS ------------- */}
       <div className="stats-container">
         {Object.entries(stats).map(([label, value]) =>
           renderStatCard(label, value as number)
         )}
       </div>
 
-      {/* Main content: Left sidebar, Grid, Right sidebar */}
+      {/* ------------- MAIN CONTENT ------------- */}
       <div className="main-content">
-        {/* Left: Transactions */}
-        <Card className="sidebar">
-          <h3 className="sidebar-title">Transactions</h3>
-          <ul className="transaction-list">
-            {transactions.map((tx, index) => {
-              const botAddr = tx.data[0]
-                ? `${tx.data[0].slice(0, 6)}...${tx.data[0].slice(-4)}`
-                : "Unknown";
-              let message = `${tx.event_name} - ${botAddr}`;
-              if (tx.event_name === "TileMined") message += " - 10 pts";
-              else if (tx.event_name === "DiamondFound") message += " - 5000 pts";
-              return (
-                <li
-                  key={index}
-                  style={{ color: eventColors[tx.event_name] || "#FFF" }}
-                >
-                  {message}
-                </li>
-              );
-            })}
-          </ul>
-        </Card>
+        {/* LEFT SIDEBAR */}
+        <div className="sidebar" style={{ display: "flex", flexDirection: "column", position: "relative" }}>
 
-        {/* Center grid */}
+          {/* MY BOTS */}
+          <Card style={{ marginBottom: "0.5rem" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <h3 className="sidebar-title" style={{ marginBottom: 0 }}>My Bots</h3>
+              {/* refresh icon on same row */}
+              <Button
+                bg="#e5e5e5"
+                textColor="#000"
+                borderColor="#000"
+                shadow="#fff"
+                style={{ width: "32px", height: "32px", padding: "0" }}
+                onClick={refreshMyBots}
+                disabled={myBotsLoading}
+              >
+                🔄
+              </Button>
+            </div>
+            {/* show progress if loading */}
+            {myBotsLoading && (
+              <ProgressBar
+                size="sm"
+                color="#c381b5"
+                borderColor="#000"
+                progress={60}
+                className="w-full mt-2"
+              />
+            )}
+            {!getUserAddressForBots() ? (
+              <p style={{ fontSize: 14, color: "#555" }}>
+                Connect a wallet to view bots.
+              </p>
+            ) : (
+              <ul style={{ marginTop: "0.5rem", maxHeight: "150px", overflowY: "auto", paddingRight: "1rem" }}>
+                {myBots.length === 0 ? (
+                  <li style={{ fontSize: 14, color: "#555" }}>No bots yet.</li>
+                ) : (
+                  myBots.map((addr, idx) => (
+                    <li key={idx} style={{ fontSize: 14, marginBottom: "0.25rem" }}>
+                      {addr.slice(0, 10)}...{addr.slice(-6)}
+                    </li>
+                  ))
+                )}
+              </ul>
+            )}
+          </Card>
+
+          {/* TRANSACTIONS */}
+          <Card style={{ marginBottom: "0.5rem", position: "relative", flex: 1 }}>
+            {/* Title + Filter Toggle in the same row */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3 className="sidebar-title" style={{ marginBottom: 0 }}>Transactions</h3>
+              <Button
+                bg={showMyBotsTxOnly ? "#c381b5" : "#e5e5e5"}
+                textColor={showMyBotsTxOnly ? "#fff" : "#000"}
+                borderColor="#000"
+                shadow="#fff"
+                onClick={handleToggleTxFilter}
+                style={{ fontSize: "0.8rem" }}
+              >
+                {showMyBotsTxOnly ? "My Bots TX" : "All TXs"}
+              </Button>
+            </div>
+            {/* optional mini progress if toggling filter */}
+            {isFilteringTx && (
+              <ProgressBar
+                size="sm"
+                color="#c381b5"
+                borderColor="#000"
+                progress={75}
+                className="w-full mt-2"
+              />
+            )}
+
+            {/* The transaction list, scrollable */}
+            <ul
+              className="transaction-list"
+              style={{
+                maxHeight: "340px",
+                overflowY: "auto",
+                marginTop: "1rem",
+                paddingRight: "1rem",
+              }}
+            >
+              {filteredTransactions.map((tx, index) => {
+                const botAddr = (tx.data?.[0] || "").toLowerCase();
+                let message = `${tx.event_name} - ${botAddr.slice(0, 6)}...${botAddr.slice(-4)}`;
+                if (tx.event_name === "TileMined") message += " - 10 pts";
+                else if (tx.event_name === "DiamondFound") message += " - 5000 pts";
+                return (
+                  <li
+                    key={index}
+                    style={{ color: eventColors[tx.event_name] || "#FFF" }}
+                  >
+                    {message}
+                  </li>
+                );
+              })}
+            </ul>
+          </Card>
+        </div>
+
+        {/* CENTER: The Grid */}
         <div className={`grid-section ${transitioning ? "fade-out" : "fade-in"}`}>
           {currentLayer > 1 && (
-            <Button onClick={handleBack}>← Back to Layer {currentLayer - 1}</Button>
+            <Button onClick={handleBack}>
+              ← Back to Layer {currentLayer - 1}
+            </Button>
           )}
-
           <div
             className="grid-container"
             style={{
               gridTemplateColumns: `repeat(${effectiveSize}, 0.5fr)`,
             }}
           >
-            {tiles.map((_, index) => (
+            {tilesArr.map((_, index) => (
               <div
                 key={index}
                 className="tile"
@@ -478,18 +604,17 @@ const MainGame: React.FC = () => {
               </div>
             ))}
           </div>
-
           <div className="hover-info">
             {hoveredTile !== null && (
               <>
-                Layer {currentLayer} . {tiles.length} tiles . Tile{" "}
+                Layer {currentLayer} . {tilesArr.length} tiles . Tile{" "}
                 {hoveredTile + 1} → ({calculateTileRange()})
               </>
             )}
           </div>
         </div>
 
-        {/* Right: Leaderboard */}
+        {/* RIGHT: Leaderboard */}
         <Card className="sidebar">
           <h3 className="sidebar-title">Leaderboard</h3>
           <ul className="leaderboard-list">
