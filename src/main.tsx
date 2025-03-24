@@ -14,7 +14,6 @@ const SEPOLIA_RPC = import.meta.env.VITE_SEPOLIA_RPC_URL;
 const customSepolia = {
   ...sepolia,
   rpcUrls: {
-    // wagmi v1+ requires an object with "public" + "default"
     public: { http: [SEPOLIA_RPC] },
     default: { http: [SEPOLIA_RPC] },
   },
@@ -32,9 +31,7 @@ const { chains, publicClient, webSocketPublicClient } = configureChains(
 
 const config = createConfig({
   autoConnect: true,
-  connectors: [
-    new InjectedConnector({ chains }),
-  ],
+  connectors: [ new InjectedConnector({ chains }) ],
   publicClient,
   webSocketPublicClient,
 });

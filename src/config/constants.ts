@@ -13,5 +13,4 @@ export const DEFAULT_DEPOSIT_VALUE = BigInt(
   import.meta.env.VITE_DEPOSIT_VALUE || '10000000000000000'
 );
 
-// Example: If your bot requires 11 tokens (with 18 decimals) to deploy:
 export const REQUIRED_BOT_DEPLOY_AMOUNT = 11n * 10n ** 18n;

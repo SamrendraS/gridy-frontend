@@ -1,134 +1,191 @@
 "use client";
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Button, Card, Popup, ProgressBar } from "pixel-retroui";
 import { useAccount as useStarknetAccount } from "@starknet-react/core";
 import { useAccount as useWagmiAccount } from "wagmi";
-
-import L1Connector from "./connectors/L1Connector";
-import WalletConnector from "./WalletConnector";
+import { v4 as uuidv4 } from "uuid";  // For unique IDs
 
 import { deployBotFromL1 } from "./connectors/L1Bridge";
 import { deployBotFromL2 } from "./connectors/L2Bridge";
 import { checkL1Balance, checkL2Balance } from "./utils/balanceChecks";
-
+import { fetchPlayerBots } from "./connectors/gameConnector";
 import {
   L1_TOKEN_ADDRESS,
   L2_TOKEN_ADDRESS,
   REQUIRED_BOT_DEPLOY_AMOUNT,
   GAME_CONTRACT_ADDRESS,
 } from "./config/constants";
-import { fetchPlayerBots } from "./connectors/gameConnector";
-import "./styles.css";
 
 import DeployingOverlay from "./components/gamified/DeployingOverlay";
+import TransactionFeed, { TransactionItem } from "./components/transactions/TransactionFeed";
+
+import "./styles.css";
 
 /**
- * MainGame: 4-layer tile approach.
- *  - Single WebSocket => stats, transaction feed, tile states
- *  - Stats row at top, MyBots (left), center tiles, Live Feed (right).
- *  - On tile click (layer 4), we deploy a new bot => show DeployingOverlay.
+ * MainGame: 
+ * - Sets up a WS for stats/tiles/transactions.
+ * - Minimizes memory usage by storing new TXs in a ref (pending).
+ * - Moves them one-by-one into "displayedTx" via setInterval.
  */
-
 export default function MainGame() {
-  // Single WS
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Stats
+  // Stats & leaderboard
   const [stats, setStats] = useState<any>({
     totalPlayers: 0,
     deployedBots: 0,
     botsAlive: 0,
-    diamondsMined: 0,
     botsDead: 0,
+    diamondsMined: 0,
     totalTilesMined: 0,
   });
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
 
-  // Live transaction feed
-  const [transactions, setTransactions] = useState<any[]>([]);
-
-  // Tiles
+  // Tile states
   const [tileStates, setTileStates] = useState<Record<string, string>>({});
   const [currentLayer, setCurrentLayer] = useState(1);
   const [selectedTiles, setSelectedTiles] = useState<number[]>([]);
   const [hoveredTile, setHoveredTile] = useState<number | null>(null);
   const [transitioning, setTransitioning] = useState(false);
 
-  // Bot + bridging states
+  // Bot data
   const [myBots, setMyBots] = useState<string[]>([]);
   const [myBotsLoading, setMyBotsLoading] = useState(false);
-  const [showMyBotsTxOnly, setShowMyBotsTxOnly] = useState(false);
-  const [filterLoad, setFilterLoad] = useState(false);
 
   // Overlays
   const [deploying, setDeploying] = useState(false);
   const [deployMessage, setDeployMessage] = useState("");
   const [deployError, setDeployError] = useState<string | null>(null);
 
-  // Wallet
+  // Wallets
   const { account: starknetAccount } = useStarknetAccount();
+  const { address: l1Address, isConnected: l1Connected } = useWagmiAccount();
   const [l2WalletAddress, setL2WalletAddress] = useState<string | null>(null);
-  const { address: l1Address, isConnected: l1IsConnected } = useWagmiAccount();
 
-  function getUserAddress(): string | null {
-    if (l2WalletAddress) return l2WalletAddress;
-    if (l1IsConnected && l1Address) return l1Address;
-    return null;
-  }
+  // For demonstration, we won't filter TX in this example, but you can do so similarly.
+  const [showMyBotsTxOnly, setShowMyBotsTxOnly] = useState(false);
+  const [filterLoad, setFilterLoad] = useState(false);
 
-  // ---- WebSocket Setup ----
+  /** 
+   * 1) pendingTxsRef: a mutable queue of new transactions 
+   *    that have not been displayed yet. 
+   */
+  const pendingTxsRef = useRef<TransactionItem[]>([]);
+  const MAX_PENDING = 500; // Prevent memory explosion
+
+  /**
+   * 2) displayedTx: the array we actually render in the feed.
+   *    We'll pop from pendingTxsRef and push here at intervals.
+   */
+  const [displayedTx, setDisplayedTx] = useState<TransactionItem[]>([]);
+  const MAX_DISPLAYED = 200;
+
+  /** 
+   * Connect the WebSocket once 
+   */
   useEffect(() => {
     wsRef.current = new WebSocket(import.meta.env.VITE_WS_URL);
     const ws = wsRef.current;
+
     ws.onopen = () => {
-      // Sub to stats, tileData, transactions
-      ws.send(JSON.stringify({ action: "stats", channel: "stats" }));
-      // ws.send(JSON.stringify({ action: "subscribe", channel: "tiles" }));
-      ws.send(JSON.stringify({ action: "subscribeTransactions", channel: "transactions" }));
+      ws.send(JSON.stringify({ action: "stats" }));
+      ws.send(JSON.stringify({ action: "subscribeTransactions" }));
+      ws.send(JSON.stringify({
+        action: "subscribeTiles",
+        layer: 0,
+        tileRange: "0-5000"
+      }));
     };
+
     ws.onmessage = (evt) => {
-      const data = JSON.parse(evt.data);
-      if (data.type === "stats") {
-        setStats({
-          totalPlayers: data.data.totalPlayers,
-          deployedBots: data.data.totalBots,
-          botsAlive: data.data.botsAlive,
-          botsDead: data.data.botsDead,
-          diamondsMined: data.data.diamondsMined,
-          totalTilesMined: data.data.totalTilesMined ?? 0,
-        });
-        setLeaderboard(data.data.leaderboard || []);
-      } else if (data.type === "transactions") {
-        // Continuous feed
-        setTransactions((prev) => {
-          const items = [...data.data, ...prev];
-          return items.slice(0, 60);
-        });
-      } else if (data.type === "tileData") {
-        // tile updates
-        const updated = { ...tileStates };
-        for (const t of data.data) {
-          const locDec = t.location.startsWith("0x") ? parseInt(t.location, 16).toString() : t.location;
-          updated[locDec] = t.mine_type.toLowerCase();
-        }
-        setTileStates(updated);
+      const msg = JSON.parse(evt.data);
+      switch (msg.type) {
+        case "stats":
+          setStats({
+            totalPlayers: msg.data.totalPlayers,
+            deployedBots: msg.data.totalBots,
+            botsAlive: msg.data.botsAlive,
+            botsDead: msg.data.botsDead,
+            diamondsMined: msg.data.diamondsMined,
+            totalTilesMined: msg.data.totalTilesMined ?? 0,
+          });
+          setLeaderboard(msg.data.leaderboard || []);
+          break;
+
+        case "transactions":
+          // Add them to pendingTxsRef, giving each a unique ID so they remain distinct
+          msg.data.forEach((rawTx: any) => {
+            // e.g. { transaction_hash, eventName, ... }
+            const item: TransactionItem = {
+              id: uuidv4(), // unique ID
+              transaction_hash: rawTx.transaction_hash,
+              eventName: rawTx.eventName,
+              data: rawTx.data,
+              timestamp: rawTx.timestamp,
+              blockNumber: rawTx.blockNumber,
+              status: rawTx.status,
+            };
+            pendingTxsRef.current.push(item);
+
+            // Cap the pending queue
+            if (pendingTxsRef.current.length > MAX_PENDING) {
+              pendingTxsRef.current.shift(); // discard oldest
+            }
+          });
+          break;
+
+        case "tileData":
+          const updated = { ...tileStates };
+          for (const t of msg.data) {
+            const locDec = t.location.startsWith("0x")
+              ? parseInt(t.location, 16).toString()
+              : t.location;
+            updated[locDec] = t.mine_type.toLowerCase();
+          }
+          setTileStates(updated);
+          break;
+
+        default:
+          break;
       }
     };
+
     ws.onclose = () => {
       console.log("WS closed");
     };
+
     return () => {
-      ws && ws.close();
+      if (ws) ws.close();
     };
   }, [tileStates]);
 
-  // ---- My Bots ----
+  /**
+   * 3) setInterval to pop from pendingTxsRef one by one, 
+   *    inserting at top of displayedTx. 
+   *    => "barrage" effect 
+   *    => limit displayedTx to avoid memory blow-up.
+   */
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (pendingTxsRef.current.length > 0) {
+        const next = pendingTxsRef.current.shift();
+        if (next) {
+          setDisplayedTx((prev) => [next, ...prev].slice(0, MAX_DISPLAYED));
+        }
+      }
+    }, 300); // new item every 0.3s
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // L2 wallet detection
   useEffect(() => {
     if (starknetAccount?.address) {
       setL2WalletAddress(starknetAccount.address);
     }
   }, [starknetAccount]);
 
+  // On any address change, refresh bots
   useEffect(() => {
     const addr = getUserAddress();
     if (addr && GAME_CONTRACT_ADDRESS) {
@@ -138,6 +195,12 @@ export default function MainGame() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [l1Address, l2WalletAddress]);
+
+  function getUserAddress(): string | null {
+    if (l2WalletAddress) return l2WalletAddress;
+    if (l1Connected && l1Address) return l1Address;
+    return null;
+  }
 
   async function refreshMyBots() {
     setMyBotsLoading(true);
@@ -153,14 +216,13 @@ export default function MainGame() {
     }
   }
 
-  // ---- Deploy Bot ----
+  // Deploy a bot
   async function handleDeployBot(tileLocation: string) {
     const addr = getUserAddress();
     if (!addr) {
       setDeployError("No wallet connected. Please connect L1 or L2 first!");
       return;
     }
-
     setDeploying(true);
     setDeployMessage("Preparing Deployment...");
     try {
@@ -168,8 +230,8 @@ export default function MainGame() {
         await checkL2Balance(starknetAccount!, L2_TOKEN_ADDRESS, REQUIRED_BOT_DEPLOY_AMOUNT);
         setDeployMessage("Signing L2 transaction...");
         const txHash = await deployBotFromL2(starknetAccount!, l2WalletAddress, tileLocation);
-        setDeployMessage(`Deploying to tile ${tileLocation} with TX: ${txHash}`);
-      } else if (l1IsConnected && l1Address) {
+        setDeployMessage(`Deploying to tile ${tileLocation} (L2 TX: ${txHash})`);
+      } else if (l1Connected && l1Address) {
         await checkL1Balance(l1Address, L1_TOKEN_ADDRESS, REQUIRED_BOT_DEPLOY_AMOUNT);
         setDeployMessage("Bridging from L1 to L2/L3...");
         const depositHash = await deployBotFromL1(
@@ -179,14 +241,10 @@ export default function MainGame() {
         );
         setDeployMessage(`Deploy TX: ${depositHash}, crossing the chain...`);
       }
-
-      // Let the WS ingestion do its job. We'll also manually refresh the bots after a short delay
       setTimeout(() => {
         refreshMyBots();
         setDeployMessage("Deployment submitted! Waiting for chain events...");
       }, 2000);
-
-      // Hide overlay in ~5 sec. (or let user manually close)
       setTimeout(() => {
         setDeploying(false);
       }, 5000);
@@ -197,27 +255,38 @@ export default function MainGame() {
     }
   }
 
-  // ---- Layers & Tile Click ----
-  function handleTileClick(index: number) {
+  // Layer logic
+  function handleTileClick(idx: number) {
     if (currentLayer < 4) {
       setTransitioning(true);
       setTimeout(() => {
-        setSelectedTiles((p) => [...p, index]);
+        setSelectedTiles((p) => [...p, idx]);
         setCurrentLayer((p) => p + 1);
         setTransitioning(false);
       }, 400);
       return;
     }
-    // If layer=4, deploy bot
+    // If layer=4 => deploy
     const rng = computeTileRange();
     if (!rng) return;
     const startIndex = parseInt(rng.split("-")[0], 10);
-    const tilePos = String(startIndex + index);
+    const tilePos = String(startIndex + idx);
     if (tileStates[tilePos] && tileStates[tilePos] !== "unmined") {
       setDeployError("Tile is already mined or has something.");
       return;
     }
     handleDeployBot(tilePos);
+  }
+
+  function handleBackLayer() {
+    if (currentLayer > 1) {
+      setTransitioning(true);
+      setTimeout(() => {
+        setSelectedTiles((p) => p.slice(0, -1));
+        setCurrentLayer((p) => p - 1);
+        setTransitioning(false);
+      }, 400);
+    }
   }
 
   function computeTileRange() {
@@ -230,17 +299,6 @@ export default function MainGame() {
     const rangeStart = startIndex + 1;
     const rangeEnd = startIndex + 20;
     return `${rangeStart}-${rangeEnd}`;
-  }
-
-  function handleBackLayer() {
-    if (currentLayer > 1) {
-      setTransitioning(true);
-      setTimeout(() => {
-        setSelectedTiles((p) => p.slice(0, -1));
-        setCurrentLayer((p) => p - 1);
-        setTransitioning(false);
-      }, 400);
-    }
   }
 
   function renderTileIcon(idx: number) {
@@ -258,21 +316,27 @@ export default function MainGame() {
     return null;
   }
 
-  // ---- Transactions feed
-  const filteredTx = showMyBotsTxOnly
-    ? transactions.filter((tx) => {
-        if (!tx.data?.length) return false;
-        const botAddr = (tx.data[0] || "").toLowerCase();
-        return myBots.some((b) => b.toLowerCase() === botAddr);
-      })
-    : transactions;
+  // Simple toggling for "MyBots" feed
+  function toggleMyBotsTx() {
+    setFilterLoad(true);
+    setTimeout(() => {
+      setShowMyBotsTxOnly(!showMyBotsTxOnly);
+      setFilterLoad(false);
+    }, 200);
+  }
+
+  // Optionally filter from displayedTx if user wants MyBots only
+  const finalDisplayed = showMyBotsTxOnly
+    ? displayedTx.filter((tx) => isMyBotTx(tx, myBots))
+    : displayedTx;
+
+  // Count how many total are known: pending + displayed
+  const totalTxCount = pendingTxsRef.current.length + displayedTx.length;
 
   return (
     <div className="app-container">
-      {/* Stats row */}
       <StatsRow stats={stats} />
 
-      {/* Deployment Overlay */}
       {deploying && (
         <DeployingOverlay
           open={deploying}
@@ -280,8 +344,6 @@ export default function MainGame() {
           onClose={() => setDeploying(false)}
         />
       )}
-
-      {/* Error popup (retro style) */}
       {deployError && (
         <Popup
           isOpen={true}
@@ -293,7 +355,7 @@ export default function MainGame() {
       )}
 
       <div className="main-content">
-        {/* Left: My Bots */}
+        {/* LEFT: My Bots + Leaderboard */}
         <Card className="sidebar" style={{ display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", justifyContent: "space-between" }}>
             <h3 className="sidebar-title" style={{ marginBottom: 0 }}>
@@ -330,19 +392,19 @@ export default function MainGame() {
             )}
           </ul>
 
-          {/* Leaderboard */}
           <hr style={{ margin: "1rem 0", borderColor: "#999" }} />
           <h3 className="sidebar-title">Leaderboard</h3>
           <ul style={{ marginTop: "0.5rem", maxHeight: "180px", overflowY: "auto" }}>
             {leaderboard.map((p: any, i: number) => (
               <li key={i}>
-                {i+1}. {p._id?.slice(0,10)}... = {p.total_score} pts
+                {i + 1}. {p.player?.slice(0, 10) || (p._id ?? "").slice(0,10)}
+                ... = {p.score ?? p.total_score} pts
               </li>
             ))}
           </ul>
         </Card>
 
-        {/* Center: Grid layers */}
+        {/* CENTER: The layered tile approach */}
         <div className={`grid-section ${transitioning ? "fade-out" : "fade-in"}`}>
           {currentLayer > 1 && (
             <Button onClick={handleBackLayer}>← Back to Layer {currentLayer - 1}</Button>
@@ -375,16 +437,16 @@ export default function MainGame() {
           </div>
           {hoveredTile !== null && (
             <div className="hover-info">
-              Layer {currentLayer}, tile {hoveredTile+1} → {computeTileRange() || ""}
+              Layer {currentLayer}, tile {hoveredTile + 1} → {computeTileRange() || ""}
             </div>
           )}
         </div>
 
-        {/* Right: Transaction feed */}
+        {/* RIGHT: Transaction feed */}
         <Card className="sidebar" style={{ display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", justifyContent: "space-between" }}>
             <h3 className="sidebar-title" style={{ marginBottom: 0 }}>
-              Transactions ({filteredTx.length})
+              Transactions ({totalTxCount})
             </h3>
             <Button
               bg={showMyBotsTxOnly ? "#c381b5" : "#e5e5e5"}
@@ -392,13 +454,7 @@ export default function MainGame() {
               borderColor="#000"
               shadow="#fff"
               style={{ fontSize: "0.8rem" }}
-              onClick={() => {
-                setFilterLoad(true);
-                setTimeout(() => {
-                  setShowMyBotsTxOnly(!showMyBotsTxOnly);
-                  setFilterLoad(false);
-                }, 200);
-              }}
+              onClick={toggleMyBotsTx}
             >
               {showMyBotsTxOnly ? "MyBots TX" : "All TX"}
             </Button>
@@ -412,22 +468,27 @@ export default function MainGame() {
               className="w-full mt-1"
             />
           )}
-          <ul style={{ marginTop: "1rem", maxHeight: "300px", overflowY: "auto" }}>
-            {filteredTx.map((tx, i) => {
-              const botAddr = (tx.data[0] || "").slice(0, 10);
-              let line = tx.event_name + " ~ Bot " + botAddr;
-              if (tx.event_name === "TileMined") line += " (+10)";
-              if (tx.event_name === "DiamondFound") line += " (+5000)";
-              return <li key={i} style={{ marginBottom: "0.3rem" }}>{line}</li>;
-            })}
-          </ul>
+
+          {/* 
+            Finally we pass the 'finalDisplayed' array 
+            to TransactionFeed for animations. 
+          */}
+          <TransactionFeed transactions={finalDisplayed} />
         </Card>
       </div>
     </div>
   );
 }
 
-// Stats row with GIF icons
+/** 
+ * Minimal function to check if transaction belongs to one of myBots 
+ */
+function isMyBotTx(tx: TransactionItem, botAddrs: string[]): boolean {
+  if (!tx.data || tx.data.length === 0) return false;
+  const maybeBotAddr = tx.data[0].toLowerCase();
+  return botAddrs.some((b) => b.toLowerCase() === maybeBotAddr);
+}
+
 function StatsRow({ stats }: { stats: any }) {
   const icons: Record<string, string> = {
     totalPlayers: "/mario.gif",
@@ -437,7 +498,6 @@ function StatsRow({ stats }: { stats: any }) {
     diamondsMined: "/diamond.gif",
     totalTilesMined: "/mining.gif",
   };
-
   const statKeys = Object.keys(stats);
 
   return (
