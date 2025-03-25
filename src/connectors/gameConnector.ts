@@ -1,4 +1,4 @@
-import { Contract, RpcProvider } from "starknet";
+import { Contract, num, RpcProvider } from "starknet";
 
 // Minimal ABI
 const GameABI = [
@@ -48,16 +48,7 @@ export async function fetchPlayerBots(
   for (let i = 1; i <= totalBots; i++) {
     const botResp = await gameContract.call("get_bot_of_player", [player, i]);
     const rawAddress = botResp[0] ?? botResp;
-    bots.push(normalizeHexAddress(String(rawAddress)));
+    bots.push(num.toHex(rawAddress));
   }
-  console.log("Fetched bots:", bots);
   return bots;
-}
-
-function normalizeHexAddress(addr: string): string {
-  let hex = addr.trim().toLowerCase();
-  if (!hex.startsWith("0x")) {
-    hex = "0x" + hex;
-  }
-  return hex;
 }

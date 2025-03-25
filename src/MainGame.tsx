@@ -24,8 +24,7 @@ import "./styles.css";
 /**
  * MainGame: 
  * - Sets up a WS for stats/tiles/transactions.
- * - Minimizes memory usage by storing new TXs in a ref (pending).
- * - Moves them one-by-one into "displayedTx" via setInterval.
+ * - Stores new TXs in a ref (pending) and moves them gradually into "displayedTx".
  */
 export default function MainGame() {
   const wsRef = useRef<WebSocket | null>(null);
@@ -62,26 +61,24 @@ export default function MainGame() {
   const { address: l1Address, isConnected: l1Connected } = useWagmiAccount();
   const [l2WalletAddress, setL2WalletAddress] = useState<string | null>(null);
 
-  // For demonstration, we won't filter TX in this example, but you can do so similarly.
+  // Filter toggling
   const [showMyBotsTxOnly, setShowMyBotsTxOnly] = useState(false);
   const [filterLoad, setFilterLoad] = useState(false);
 
-  /** 
-   * 1) pendingTxsRef: a mutable queue of new transactions 
-   *    that have not been displayed yet. 
+  /**
+   * pendingTxsRef: queue of new transactions not yet displayed.
    */
   const pendingTxsRef = useRef<TransactionItem[]>([]);
   const MAX_PENDING = 500; // Prevent memory explosion
 
   /**
-   * 2) displayedTx: the array we actually render in the feed.
-   *    We'll pop from pendingTxsRef and push here at intervals.
+   * displayedTx: the array we actually render in the feed.
    */
   const [displayedTx, setDisplayedTx] = useState<TransactionItem[]>([]);
   const MAX_DISPLAYED = 200;
 
-  /** 
-   * Connect the WebSocket once 
+  /**
+   * Connect the WebSocket once
    */
   useEffect(() => {
     wsRef.current = new WebSocket(import.meta.env.VITE_WS_URL);
@@ -113,11 +110,10 @@ export default function MainGame() {
           break;
 
         case "transactions":
-          // Add them to pendingTxsRef, giving each a unique ID so they remain distinct
+          // Add them to pendingTxsRef with a unique ID
           msg.data.forEach((rawTx: any) => {
-            // e.g. { transaction_hash, eventName, ... }
             const item: TransactionItem = {
-              id: uuidv4(), // unique ID
+              id: uuidv4(),
               transaction_hash: rawTx.transaction_hash,
               eventName: rawTx.eventName,
               data: rawTx.data,
@@ -127,7 +123,6 @@ export default function MainGame() {
             };
             pendingTxsRef.current.push(item);
 
-            // Cap the pending queue
             if (pendingTxsRef.current.length > MAX_PENDING) {
               pendingTxsRef.current.shift(); // discard oldest
             }
@@ -160,10 +155,7 @@ export default function MainGame() {
   }, [tileStates]);
 
   /**
-   * 3) setInterval to pop from pendingTxsRef one by one, 
-   *    inserting at top of displayedTx. 
-   *    => "barrage" effect 
-   *    => limit displayedTx to avoid memory blow-up.
+   * Pop from pendingTxsRef into displayedTx at intervals for the "barrage" effect.
    */
   useEffect(() => {
     const interval = setInterval(() => {
@@ -178,22 +170,20 @@ export default function MainGame() {
     return () => clearInterval(interval);
   }, []);
 
-  // L2 wallet detection
+  // Detect L2 wallet
   useEffect(() => {
     if (starknetAccount?.address) {
       setL2WalletAddress(starknetAccount.address);
     }
   }, [starknetAccount]);
 
-  // On any address change, refresh bots
+  // On address changes, refresh MyBots
   useEffect(() => {
-    const addr = getUserAddress();
-    if (addr && GAME_CONTRACT_ADDRESS) {
+    if (getUserAddress() && GAME_CONTRACT_ADDRESS) {
       refreshMyBots();
     } else {
       setMyBots([]);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [l1Address, l2WalletAddress]);
 
   function getUserAddress(): string | null {
@@ -272,7 +262,7 @@ export default function MainGame() {
     const startIndex = parseInt(rng.split("-")[0], 10);
     const tilePos = String(startIndex + idx);
     if (tileStates[tilePos] && tileStates[tilePos] !== "unmined") {
-      setDeployError("Tile is already mined or has something.");
+      setDeployError("Tile is already mined or has something on it.");
       return;
     }
     handleDeployBot(tilePos);
@@ -316,7 +306,7 @@ export default function MainGame() {
     return null;
   }
 
-  // Simple toggling for "MyBots" feed
+  // Toggle “MyBots TX” vs “All TX”
   function toggleMyBotsTx() {
     setFilterLoad(true);
     setTimeout(() => {
@@ -325,12 +315,22 @@ export default function MainGame() {
     }, 200);
   }
 
-  // Optionally filter from displayedTx if user wants MyBots only
+  /**
+   * Checks if a transaction is tied to one of our bot addresses.
+   * The first element of `tx.data` is the bot address.
+   */
+  function isMyBotTx(tx: TransactionItem, botAddrs: string[]): boolean {
+    if (!tx.data || tx.data.length === 0) return false;
+    const maybeBotAddr = tx.data[0].toLowerCase();
+    return botAddrs.some((b) => b.toLowerCase() === maybeBotAddr);
+  }
+
+  // Filter transactions if showMyBotsTxOnly is active
   const finalDisplayed = showMyBotsTxOnly
     ? displayedTx.filter((tx) => isMyBotTx(tx, myBots))
     : displayedTx;
 
-  // Count how many total are known: pending + displayed
+  // Count total known transactions: pending + displayed
   const totalTxCount = pendingTxsRef.current.length + displayedTx.length;
 
   return (
@@ -355,7 +355,7 @@ export default function MainGame() {
       )}
 
       <div className="main-content">
-        {/* LEFT: My Bots + Leaderboard */}
+        {/* LEFT: MyBots + Leaderboard */}
         <Card className="sidebar" style={{ display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", justifyContent: "space-between" }}>
             <h3 className="sidebar-title" style={{ marginBottom: 0 }}>
@@ -470,8 +470,8 @@ export default function MainGame() {
           )}
 
           {/* 
-            Finally we pass the 'finalDisplayed' array 
-            to TransactionFeed for animations. 
+            We pass the filtered list of transactions
+            (based on 'myBots') to TransactionFeed.
           */}
           <TransactionFeed transactions={finalDisplayed} />
         </Card>
@@ -480,15 +480,7 @@ export default function MainGame() {
   );
 }
 
-/** 
- * Minimal function to check if transaction belongs to one of myBots 
- */
-function isMyBotTx(tx: TransactionItem, botAddrs: string[]): boolean {
-  if (!tx.data || tx.data.length === 0) return false;
-  const maybeBotAddr = tx.data[0].toLowerCase();
-  return botAddrs.some((b) => b.toLowerCase() === maybeBotAddr);
-}
-
+// Simple stats row component for demonstration
 function StatsRow({ stats }: { stats: any }) {
   const icons: Record<string, string> = {
     totalPlayers: "/mario.gif",
