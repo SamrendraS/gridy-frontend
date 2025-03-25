@@ -1,69 +1,41 @@
-// File: ./src/connectors/L1Connector.tsx
-import React, { useState } from 'react';
-import {
-  useConnect,
-  useDisconnect,
-  useAccount,
-  Connector,
-} from 'wagmi';
-import { Button, Popup } from 'pixel-retroui';
-import { useAccount as useStarknetAccount, useDisconnect as useStarknetDisconnect } from '@starknet-react/core';
+import React, { useState } from 'react'
+import { useConnect, useDisconnect, useAccount, Connector } from 'wagmi'
+import { Button, Popup } from 'pixel-retroui'
+import { useAccount as useStarknetAccount, useDisconnect as useStarknetDisconnect } from '@starknet-react/core'
 
-/**
- * L1Connector: A “Connect L1” button for Metamask, etc. using wagmi.
- * Automatically disconnects any L2 wallet upon successful L1 connection.
- */
 export default function L1Connector() {
-  const [showModal, setShowModal] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [showModal, setShowModal] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  // Wagmi: L1
-  const {
-    connect,
-    connectors,
-    error: wagmiError,
-    isLoading,
-    pendingConnector,
-  } = useConnect({
+  const { connect, connectors, error: wagmiError, isLoading, pendingConnector } = useConnect({
     onError(err) {
-      setError(err.message);
+      setError(err.message)
     },
-  });
-
+  })
   const { disconnect: wagmiDisconnect } = useDisconnect({
     onSuccess() {
-      setError(null);
-      setShowModal(false);
+      setError(null)
+      setShowModal(false)
     },
-  });
-  const { isConnected: l1Connected, address } = useAccount();
+  })
+  const { isConnected: l1Connected, address } = useAccount()
 
-  // Starknet: L2
-  const starknetAcc = useStarknetAccount();
-  const { disconnect: starknetDisconnect } = useStarknetDisconnect();
+  const starknetAcc = useStarknetAccount()
+  const { disconnect: starknetDisconnect } = useStarknetDisconnect()
 
-  const handleConnectClick = () => {
-    setShowModal(true);
-  };
+  const handleConnectClick = () => setShowModal(true)
 
-  const handleDisconnectClick = () => {
-    wagmiDisconnect();
-  };
+  const handleDisconnectClick = () => wagmiDisconnect()
 
-  /**
-   * Attempt to connect to given Wagmi connector. If user has
-   * an L2 wallet connected, disconnect it first.
-   */
   async function handleConnectConnector(connector: Connector) {
-    // If there's a Starknet account connected, disconnect it
     if (starknetAcc?.address) {
       try {
-        starknetDisconnect();
+        starknetDisconnect()
       } catch (e) {
-        console.error('Failed to disconnect L2 wallet', e);
+        console.error('Failed to disconnect L2 wallet', e)
       }
     }
-    connect({ connector });
+    connect({ connector })
   }
 
   return (
@@ -120,7 +92,6 @@ export default function L1Connector() {
                     </Button>
                   </div>
                 ))}
-
                 {(wagmiError || error) && (
                   <p style={{ color: 'red', marginTop: '0.5rem' }}>
                     {wagmiError?.message || error || 'Failed to connect'}
@@ -132,5 +103,5 @@ export default function L1Connector() {
         </Popup>
       )}
     </>
-  );
+  )
 }

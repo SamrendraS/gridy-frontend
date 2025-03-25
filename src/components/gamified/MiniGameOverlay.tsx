@@ -1,41 +1,36 @@
-"use client";
-import React, { useEffect, useState } from "react";
-import { Card } from "pixel-retroui";
+"use client"
+import React, { useEffect, useState } from "react"
+import { Card } from "pixel-retroui"
 
 type MiniGameOverlayProps = {
-  open: boolean;
-  message: string;
-  onClose: () => void;
-};
+  open: boolean
+  message: string
+  onClose: () => void
+}
 
 export default function MiniGameOverlay({
   open,
   message,
   onClose
 }: MiniGameOverlayProps) {
-  const [starsClicked, setStarsClicked] = useState(0);
-  const [target, setTarget] = useState(3); // Must collect 3 stars
+  const [starsClicked, setStarsClicked] = useState(0)
+  const [target] = useState(3)
 
   useEffect(() => {
-    if (!open) {
-      setStarsClicked(0);
-    }
-  }, [open]);
+    if (!open) setStarsClicked(0)
+  }, [open])
 
   useEffect(() => {
     if (starsClicked >= target) {
-      // mini game success
-      setTimeout(() => {
-        onClose();
-      }, 500);
+      setTimeout(() => onClose(), 500)
     }
-  }, [starsClicked, target, onClose]);
+  }, [starsClicked, target, onClose])
 
-  if (!open) return null;
+  if (!open) return null
 
   const handleStarClick = () => {
-    setStarsClicked((prev) => prev + 1);
-  };
+    setStarsClicked((prev) => prev + 1)
+  }
 
   return (
     <div
@@ -56,7 +51,7 @@ export default function MiniGameOverlay({
         shadowColor="#c381b5"
         className="p-4 flex flex-col items-center relative"
       >
-        <h2 className="font-minecraft-bold text-lg mb-2">Awaiting Confirmation</h2>
+        <h2 className="text-lg mb-2">Awaiting Confirmation</h2>
         <p style={{ marginBottom: "1rem", maxWidth: "220px", textAlign: "center" }}>
           {message}
         </p>
@@ -80,7 +75,7 @@ export default function MiniGameOverlay({
         </div>
 
         <button
-          onClick={() => onClose()}
+          onClick={onClose}
           style={{
             marginTop: "1rem",
             border: "1px solid #000",
@@ -94,5 +89,5 @@ export default function MiniGameOverlay({
         </button>
       </Card>
     </div>
-  );
+  )
 }

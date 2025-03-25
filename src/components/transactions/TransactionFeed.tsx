@@ -1,27 +1,26 @@
-// src/components/transactions/TransactionFeed.tsx
-
-import React from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import React from "react"
+import { AnimatePresence, motion } from "framer-motion"
+import { num } from "starknet"
 
 export interface TransactionItem {
-  id: string;              // unique ID
-  transaction_hash: string;
-  eventName: string;
-  data?: string[];
-  timestamp?: string;
-  blockNumber?: string | number;
-  status?: string;
+  id: string
+  transaction_hash: string
+  eventName: string
+  data?: string[]
+  timestamp?: string
+  blockNumber?: string | number
+  status?: string
 }
 
-/** 
- * TransactionFeed:
- * - Renders a list of transaction "cards" with a simple slide-in animation.
- * - Expects "transactions" to already be in the desired order (newest first).
- */
 interface Props {
-  transactions: TransactionItem[];
+  transactions: TransactionItem[]
 }
+
 export default function TransactionFeed({ transactions }: Props) {
+  const shortHash = (hash: string) => {
+    return hash.slice(0, 10) + "..." + hash.slice(-4)
+  }
+
   return (
     <div style={{ 
       marginTop: "0.5rem", 
@@ -32,11 +31,10 @@ export default function TransactionFeed({ transactions }: Props) {
     }}>
       <AnimatePresence initial={false}>
         {transactions.map((tx) => {
-          // Shorten hash
-          const shortHash = tx.transaction_hash
-            ? tx.transaction_hash.slice(0, 10) + "..." + tx.transaction_hash.slice(-4)
-            : "(no-hash)";
-
+          const { bot_address, player, location } = tx.data;
+          // const shortHash = tx.transaction_hash
+          //   ? tx.transaction_hash.slice(0, 10) + "..." + tx.transaction_hash.slice(-4)
+          //   : "(no-hash)"
           return (
             <motion.div
               key={tx.id}
@@ -55,11 +53,14 @@ export default function TransactionFeed({ transactions }: Props) {
               }}
             >
               <div style={{ fontWeight: "bold" }}>{tx.eventName}</div>
-              <div style={{ fontSize: "0.85rem" }}>{shortHash}</div>
+              <div style={{ fontSize: "0.85rem" }}>txHash: {shortHash(tx.transaction_hash)}</div>
+              <div style={{ fontSize: "0.85rem" }}>bot: {shortHash(num.toHex(bot_address))}</div>
+              {player && <div style={{ fontSize: "0.85rem" }}>player: {shortHash(num.toHex(player))}</div>}
+              {location && <div style={{ fontSize: "0.85rem" }}>location: {location}</div>}
             </motion.div>
-          );
+          )
         })}
       </AnimatePresence>
     </div>
-  );
+  )
 }

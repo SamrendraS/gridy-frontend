@@ -1,13 +1,13 @@
-"use client";
-import React, { useEffect, useRef, useState } from "react";
-import { Card, ProgressBar } from "pixel-retroui";
+"use client"
+import React, { useEffect, useState } from "react"
+import { Card, ProgressBar } from "pixel-retroui"
 
 type GamifiedBridgeOverlayProps = {
-  isOpen: boolean;
-  onClose: () => void;
-  step: number;    // 0 to 100 for bridging progress
-  message: string; // e.g. "Approving tokens..." / "Bridging..."
-};
+  isOpen: boolean
+  onClose: () => void
+  step: number
+  message: string
+}
 
 export default function GamifiedBridgeOverlay({
   isOpen,
@@ -15,17 +15,17 @@ export default function GamifiedBridgeOverlay({
   step,
   message,
 }: GamifiedBridgeOverlayProps) {
-  const [dots, setDots] = useState(".");
+  const [dots, setDots] = useState(".")
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) return
     const intv = setInterval(() => {
-      setDots((prev) => (prev.length >= 3 ? "." : prev + "."));
-    }, 500);
-    return () => clearInterval(intv);
-  }, [isOpen]);
+      setDots((prev) => (prev.length >= 3 ? "." : prev + "."))
+    }, 500)
+    return () => clearInterval(intv)
+  }, [isOpen])
 
-  if (!isOpen) return null;
+  if (!isOpen) return null
 
   return (
     <div
@@ -46,7 +46,7 @@ export default function GamifiedBridgeOverlay({
         shadowColor="#000000"
         className="p-6 flex flex-col items-center max-w-md"
       >
-        <h2 className="font-minecraft-bold text-lg mb-2">Bridging in Progress{dots}</h2>
+        <h2 className="text-lg mb-2">Bridging in Progress{dots}</h2>
         <p className="text-sm mb-4">{message}</p>
         <ProgressBar
           progress={step}
@@ -73,5 +73,5 @@ export default function GamifiedBridgeOverlay({
         </button>
       </Card>
     </div>
-  );
+  )
 }

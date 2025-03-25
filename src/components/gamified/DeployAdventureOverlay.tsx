@@ -1,27 +1,19 @@
-"use client";
-import React, { useEffect, useState } from "react";
-import { Card, ProgressBar, Button } from "pixel-retroui";
-import { fetchPlayerBots } from "../../connectors/gameConnector"; 
-// This calls your get_total_bots_of_player, etc.
+"use client"
+import React, { useEffect, useState } from "react"
+import { Card, ProgressBar, Button } from "pixel-retroui"
+import { fetchPlayerBots } from "../../connectors/gameConnector"
 
 type DeployAdventureOverlayProps = {
-  isOpen: boolean;
-  onClose: () => void;
-  playerAddress: string;
-  tileLocation: string;     // So we can show the tile in the animation
-  doL1Bridge: boolean;      // If bridging L1→L2→L3 or direct L2→L3
-  pollInterval?: number;    // How frequently we poll (ms)
-  contractAddress?: string; // For fetchPlayerBots if needed
-  onDeployStart?: () => Promise<void>; 
-  // This function triggers the bridging or signing, returns once tx is sent, but not confirmed
-};
+  isOpen: boolean
+  onClose: () => void
+  playerAddress: string
+  tileLocation: string
+  doL1Bridge: boolean
+  pollInterval?: number
+  contractAddress?: string
+  onDeployStart?: () => Promise<void>
+}
 
-/**
- * DeployAdventureOverlay:
- *  - Multi-step 8-bit animation (like "Gathering resources", "Cross warp" etc.)
- *  - Calls `onDeployStart` to do bridging/tx sending.
- *  - Then polls the contract or waits for event to confirm the new bot has arrived.
- */
 export default function DeployAdventureOverlay({
   isOpen,
   onClose,
@@ -32,100 +24,88 @@ export default function DeployAdventureOverlay({
   contractAddress,
   onDeployStart,
 }: DeployAdventureOverlayProps) {
-  const [currentStep, setCurrentStep] = useState(0);
-  const [message, setMessage] = useState("");
-  const [botsCountStart, setBotsCountStart] = useState<number | null>(null);
-  const [isDeployed, setIsDeployed] = useState(false);
-  const [pollingActive, setPollingActive] = useState(false);
-  const [pollError, setPollError] = useState<string | null>(null);
+  const [currentStep, setCurrentStep] = useState(0)
+  const [message, setMessage] = useState("")
+  const [botsCountStart, setBotsCountStart] = useState<number | null>(null)
+  const [isDeployed, setIsDeployed] = useState(false)
+  const [pollingActive, setPollingActive] = useState(false)
+  const [pollError, setPollError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!isOpen) return;
-    setCurrentStep(0);
-    setMessage("");
-    setIsDeployed(false);
-    setPollError(null);
-    setPollingActive(false);
-
-    // Capture starting bot count
+    if (!isOpen) return
+    setCurrentStep(0)
+    setMessage("")
+    setIsDeployed(false)
+    setPollError(null)
+    setPollingActive(false)
     if (contractAddress && playerAddress) {
       fetchPlayerBots(contractAddress, playerAddress).then((bots) => {
-        setBotsCountStart(bots.length);
-      });
+        setBotsCountStart(bots.length)
+      })
     }
-  }, [isOpen, contractAddress, playerAddress]);
+  }, [isOpen, contractAddress, playerAddress])
 
   useEffect(() => {
-    if (!isOpen || !botsCountStart || !pollingActive) return;
-
+    if (!isOpen || !botsCountStart || !pollingActive) return
     const handlePoll = async () => {
       try {
-        const bots = await fetchPlayerBots(contractAddress!, playerAddress);
+        const bots = await fetchPlayerBots(contractAddress!, playerAddress)
         if (bots.length > botsCountStart) {
-          setIsDeployed(true);
+          setIsDeployed(true)
         }
       } catch (err: any) {
-        setPollError(String(err.message));
+        setPollError(String(err.message))
       }
-    };
-
-    let intv: any;
-    if (!isDeployed) {
-      intv = setInterval(handlePoll, pollInterval);
     }
-    return () => clearInterval(intv);
-  }, [pollingActive, isDeployed, isOpen, botsCountStart, contractAddress, playerAddress, pollInterval]);
+    let intv: any
+    if (!isDeployed) {
+      intv = setInterval(handlePoll, pollInterval)
+    }
+    return () => clearInterval(intv)
+  }, [pollingActive, isDeployed, isOpen, botsCountStart, contractAddress, playerAddress, pollInterval])
 
   useEffect(() => {
     if (isDeployed) {
-      setMessage("Your Bot has arrived safely!");
-      setTimeout(() => onClose(), 2000);
+      setMessage("Your Bot has arrived safely!")
+      setTimeout(() => onClose(), 2000)
     }
-  }, [isDeployed, onClose]);
+  }, [isDeployed, onClose])
 
-  if (!isOpen) return null;
+  if (!isOpen) return null
 
   const startDeployment = async () => {
-    setCurrentStep(1);
-    // Step 1: "Gathering resources..."
-    setMessage("Gathering resources...");
-    await new Promise((r) => setTimeout(r, 1000));
+    setCurrentStep(1)
+    setMessage("Gathering resources...")
+    await new Promise((r) => setTimeout(r, 1000))
 
     if (onDeployStart) {
       try {
-        // step 2: bridging or direct sign
-        setCurrentStep(2);
-        if (doL1Bridge) {
-          setMessage("Crossing the Warp Bridge...");
-        } else {
-          setMessage("Activating Bot Blueprint...");
-        }
-        await onDeployStart();
+        setCurrentStep(2)
+        setMessage(doL1Bridge ? "Crossing the Warp Bridge..." : "Activating Bot Blueprint...")
+        await onDeployStart()
       } catch (err: any) {
-        setMessage("Deployment failed! " + String(err.message));
-        return;
+        setMessage("Deployment failed! " + String(err.message))
+        return
       }
     }
-
-    // step 3: waiting for arrival
-    setCurrentStep(3);
-    setMessage("Awaiting Bot arrival on tile " + tileLocation + "...");
-    setPollingActive(true);
-  };
+    setCurrentStep(3)
+    setMessage("Awaiting Bot arrival on tile " + tileLocation + "...")
+    setPollingActive(true)
+  }
 
   const handleCancel = () => {
-    onClose();
-  };
+    onClose()
+  }
 
   const progress = (() => {
     switch (currentStep) {
-      case 0: return 0;
-      case 1: return 25;
-      case 2: return 60;
-      case 3: return 90;
-      default: return 100;
+      case 0: return 0
+      case 1: return 25
+      case 2: return 60
+      case 3: return 90
+      default: return 100
     }
-  })();
+  })()
 
   return (
     <div
@@ -146,7 +126,7 @@ export default function DeployAdventureOverlay({
         shadowColor="#c381b5"
         className="p-6 max-w-md flex flex-col items-center"
       >
-        <h2 className="font-minecraft-bold text-lg mb-2">
+        <h2 className="text-lg mb-2">
           Bot Deployment Adventure
         </h2>
         <p className="mb-4" style={{ textAlign: "center" }}>
@@ -158,8 +138,6 @@ export default function DeployAdventureOverlay({
           progress={progress}
           className="w-64 mb-4"
         />
-
-        {/* Pixel-art animation changes per step */}
         {currentStep === 0 && (
           <img src="/step0_gather.gif" alt="Gather" className="w-32 h-32" />
         )}
@@ -191,7 +169,6 @@ export default function DeployAdventureOverlay({
             Start Deployment
           </Button>
         )}
-
         <Button
           onClick={handleCancel}
           bg="#e5e5e5"
@@ -204,5 +181,5 @@ export default function DeployAdventureOverlay({
         </Button>
       </Card>
     </div>
-  );
+  )
 }

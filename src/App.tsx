@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
-import { StarknetProvider } from './StarknetProvider';
-import LandingPage from './LandingPage';
-import MainGame from './MainGame';
-import Header from './components/Header';
+import React, { useState } from 'react'
+import { StarknetProvider } from './StarknetProvider'
+import LandingPage from './LandingPage'
+import MainGame from './MainGame'
+import Header from './components/Header'
 
 export default function App() {
-  const [isGameStarted, setIsGameStarted] = useState(false);
+  const [isGameStarted, setIsGameStarted] = useState(false)
 
   return (
     <StarknetProvider>
@@ -18,5 +18,5 @@ export default function App() {
         )}
       </div>
     </StarknetProvider>
-  );
+  )
 }

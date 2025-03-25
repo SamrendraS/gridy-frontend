@@ -1,6 +1,5 @@
-import { Contract, num, RpcProvider } from "starknet";
+import { Contract, num, RpcProvider } from "starknet"
 
-// Minimal ABI
 const GameABI = [
   {
     type: "function",
@@ -21,34 +20,24 @@ const GameABI = [
     outputs: [{ type: "core::starknet::contract_address::ContractAddress" }],
     state_mutability: "view",
   },
-];
+]
 
-/**
- * fetchPlayerBots:
- *  - get_total_bots_of_player(player) -> total
- *  - for i in [0..total-1], get_bot_of_player(player, i)
- *  - return array of hex addresses
- */
 export async function fetchPlayerBots(
   gameAddress: string,
   player: string
 ): Promise<string[]> {
-  const provider = new RpcProvider({ nodeUrl: import.meta.env.VITE_GRIDY_RPC_URL });
-  const gameContract = new Contract(GameABI, gameAddress, provider);
+  const provider = new RpcProvider({ nodeUrl: import.meta.env.VITE_GRIDY_RPC_URL })
+  const gameContract = new Contract(GameABI, gameAddress, provider)
 
-  const totalResp = await gameContract.call("get_total_bots_of_player", [player]);
-  const totalBots = Number(totalResp[0] ?? totalResp);
-  console.log("TOTAL BOTS =", totalBots);
+  const totalResp = await gameContract.call("get_total_bots_of_player", [player])
+  const totalBots = Number(totalResp[0] ?? totalResp)
+  if (totalBots <= 0) return []
 
-  if (totalBots <= 0) {
-    return [];
-  }
-
-  const bots: string[] = [];
+  const bots: string[] = []
   for (let i = 1; i <= totalBots; i++) {
-    const botResp = await gameContract.call("get_bot_of_player", [player, i]);
-    const rawAddress = botResp[0] ?? botResp;
-    bots.push(num.toHex(rawAddress));
+    const botResp = await gameContract.call("get_bot_of_player", [player, i])
+    const rawAddress = botResp[0] ?? botResp
+    bots.push(num.toHex(rawAddress))
   }
-  return bots;
+  return bots
 }

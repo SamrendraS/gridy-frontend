@@ -1,15 +1,11 @@
-"use client";
-import React from "react";
-import { Card, ProgressBar } from "pixel-retroui";
+"use client"
+import React from "react"
+import { Card, ProgressBar } from "pixel-retroui"
 
-/**
- * RetroLoadingOverlay: A simple full-screen overlay
- * showing a retro-styled progress bar & loading text.
- */
 type RetroLoadingOverlayProps = {
-  message?: string;
-  progress?: number; // 0 to 100
-};
+  message?: string
+  progress?: number
+}
 
 export default function RetroLoadingOverlay({
   message,
@@ -34,7 +30,7 @@ export default function RetroLoadingOverlay({
         shadowColor="#000000"
         className="p-6 flex flex-col items-center"
       >
-        <h2 className="font-minecraft-bold text-lg mb-4">
+        <h2 className="text-lg mb-4">
           {message || "Loading..."}
         </h2>
         <ProgressBar
@@ -45,5 +41,5 @@ export default function RetroLoadingOverlay({
         />
       </Card>
     </div>
-  );
+  )
 }
