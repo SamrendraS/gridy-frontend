@@ -1,15 +1,23 @@
+// File: ./src/connectors/L1Connector.tsx
 import React, { useState } from 'react';
-import { useConnect, useDisconnect, useAccount, Connector } from 'wagmi';
+import {
+  useConnect,
+  useDisconnect,
+  useAccount,
+  Connector,
+} from 'wagmi';
 import { Button, Popup } from 'pixel-retroui';
+import { useAccount as useStarknetAccount, useDisconnect as useStarknetDisconnect } from '@starknet-react/core';
 
 /**
- * L1Connector: “Connect L1” button for Metamask or other injected EVM providers.
+ * L1Connector: A “Connect L1” button for Metamask, etc. using wagmi.
+ * Automatically disconnects any L2 wallet upon successful L1 connection.
  */
 export default function L1Connector() {
   const [showModal, setShowModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // wagmi hooks
+  // Wagmi: L1
   const {
     connect,
     connectors,
@@ -22,22 +30,41 @@ export default function L1Connector() {
     },
   });
 
-  const { disconnect } = useDisconnect({
+  const { disconnect: wagmiDisconnect } = useDisconnect({
     onSuccess() {
       setError(null);
       setShowModal(false);
     },
   });
+  const { isConnected: l1Connected, address } = useAccount();
 
-  const { isConnected, address } = useAccount();
+  // Starknet: L2
+  const starknetAcc = useStarknetAccount();
+  const { disconnect: starknetDisconnect } = useStarknetDisconnect();
 
   const handleConnectClick = () => {
     setShowModal(true);
   };
 
   const handleDisconnectClick = () => {
-    disconnect();
+    wagmiDisconnect();
   };
+
+  /**
+   * Attempt to connect to given Wagmi connector. If user has
+   * an L2 wallet connected, disconnect it first.
+   */
+  async function handleConnectConnector(connector: Connector) {
+    // If there's a Starknet account connected, disconnect it
+    if (starknetAcc?.address) {
+      try {
+        starknetDisconnect();
+      } catch (e) {
+        console.error('Failed to disconnect L2 wallet', e);
+      }
+    }
+    connect({ connector });
+  }
 
   return (
     <>
@@ -48,7 +75,7 @@ export default function L1Connector() {
         shadow="#ffffff"
         onClick={handleConnectClick}
       >
-        {isConnected
+        {l1Connected
           ? `L1: ${address?.slice(0, 6)}...${address?.slice(-4)}`
           : 'Connect L1'
         }
@@ -61,7 +88,7 @@ export default function L1Connector() {
           isOpen={showModal}
         >
           <div style={{ color: '#000' }}>
-            {isConnected ? (
+            {l1Connected ? (
               <>
                 <p>Connected to {address}</p>
                 <Button
@@ -81,7 +108,7 @@ export default function L1Connector() {
                   <div key={connector.id} style={{ marginBottom: '0.5rem' }}>
                     <Button
                       disabled={!connector.ready || isLoading}
-                      onClick={() => connect({ connector })}
+                      onClick={() => handleConnectConnector(connector)}
                       bg="#1a1a1a"
                       textColor="#ffffff"
                       borderColor="#4dfffc"
@@ -94,15 +121,9 @@ export default function L1Connector() {
                   </div>
                 ))}
 
-                {wagmiError && (
+                {(wagmiError || error) && (
                   <p style={{ color: 'red', marginTop: '0.5rem' }}>
-                    {wagmiError.message || 'Failed to connect'}
-                  </p>
-                )}
-
-                {error && (
-                  <p style={{ color: 'red', marginTop: '0.5rem' }}>
-                    {error}
+                    {wagmiError?.message || error || 'Failed to connect'}
                   </p>
                 )}
               </>

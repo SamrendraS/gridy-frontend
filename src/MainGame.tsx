@@ -1,9 +1,9 @@
+// File: ./src/MainGame.tsx
 "use client";
 import React, { useEffect, useRef, useState } from "react";
 import { Button, Card, Popup, ProgressBar } from "pixel-retroui";
-import { useAccount as useStarknetAccount } from "@starknet-react/core";
 import { useAccount as useWagmiAccount } from "wagmi";
-import { v4 as uuidv4 } from "uuid";  // For unique IDs
+import { v4 as uuidv4 } from "uuid";
 
 import { deployBotFromL1 } from "./connectors/L1Bridge";
 import { deployBotFromL2 } from "./connectors/L2Bridge";
@@ -18,18 +18,17 @@ import {
 
 import DeployingOverlay from "./components/gamified/DeployingOverlay";
 import TransactionFeed, { TransactionItem } from "./components/transactions/TransactionFeed";
-
 import "./styles.css";
 
 /**
- * MainGame: 
- * - Sets up a WS for stats/tiles/transactions.
- * - Stores new TXs in a ref (pending) and moves them gradually into "displayedTx".
+ * MainGame:
+ *   - If L2 is connected (window.starknet?.selectedAddress), call deployBotFromL2.
+ *   - Otherwise if L1 is connected, call deployBotFromL1.
  */
 export default function MainGame() {
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Stats & leaderboard
+  // Stats
   const [stats, setStats] = useState<any>({
     totalPlayers: 0,
     deployedBots: 0,
@@ -56,34 +55,23 @@ export default function MainGame() {
   const [deployMessage, setDeployMessage] = useState("");
   const [deployError, setDeployError] = useState<string | null>(null);
 
-  // Wallets
-  const { account: starknetAccount } = useStarknetAccount();
+  // L1 wallet via wagmi
   const { address: l1Address, isConnected: l1Connected } = useWagmiAccount();
-  const [l2WalletAddress, setL2WalletAddress] = useState<string | null>(null);
 
   // Filter toggling
   const [showMyBotsTxOnly, setShowMyBotsTxOnly] = useState(false);
   const [filterLoad, setFilterLoad] = useState(false);
 
-  /**
-   * pendingTxsRef: queue of new transactions not yet displayed.
-   */
+  // Transaction feed
   const pendingTxsRef = useRef<TransactionItem[]>([]);
-  const MAX_PENDING = 500; // Prevent memory explosion
-
-  /**
-   * displayedTx: the array we actually render in the feed.
-   */
   const [displayedTx, setDisplayedTx] = useState<TransactionItem[]>([]);
+  const MAX_PENDING = 500;
   const MAX_DISPLAYED = 200;
 
-  /**
-   * Connect the WebSocket once
-   */
+  // Websocket connection
   useEffect(() => {
     wsRef.current = new WebSocket(import.meta.env.VITE_WS_URL);
     const ws = wsRef.current;
-
     ws.onopen = () => {
       ws.send(JSON.stringify({ action: "stats" }));
       ws.send(JSON.stringify({ action: "subscribeTransactions" }));
@@ -93,7 +81,6 @@ export default function MainGame() {
         tileRange: "0-5000"
       }));
     };
-
     ws.onmessage = (evt) => {
       const msg = JSON.parse(evt.data);
       switch (msg.type) {
@@ -110,7 +97,6 @@ export default function MainGame() {
           break;
 
         case "transactions":
-          // Add them to pendingTxsRef with a unique ID
           msg.data.forEach((rawTx: any) => {
             const item: TransactionItem = {
               id: uuidv4(),
@@ -122,9 +108,8 @@ export default function MainGame() {
               status: rawTx.status,
             };
             pendingTxsRef.current.push(item);
-
             if (pendingTxsRef.current.length > MAX_PENDING) {
-              pendingTxsRef.current.shift(); // discard oldest
+              pendingTxsRef.current.shift();
             }
           });
           break;
@@ -139,24 +124,19 @@ export default function MainGame() {
           }
           setTileStates(updated);
           break;
-
-        default:
-          break;
       }
     };
-
     ws.onclose = () => {
       console.log("WS closed");
     };
 
     return () => {
-      if (ws) ws.close();
+      ws && ws.close();
     };
-  }, [tileStates]);
+    // eslint-disable-next-line
+  }, []);
 
-  /**
-   * Pop from pendingTxsRef into displayedTx at intervals for the "barrage" effect.
-   */
+  // transaction feed "barrage" effect
   useEffect(() => {
     const interval = setInterval(() => {
       if (pendingTxsRef.current.length > 0) {
@@ -165,38 +145,35 @@ export default function MainGame() {
           setDisplayedTx((prev) => [next, ...prev].slice(0, MAX_DISPLAYED));
         }
       }
-    }, 300); // new item every 0.3s
-
+    }, 300);
     return () => clearInterval(interval);
   }, []);
 
-  // Detect L2 wallet
-  useEffect(() => {
-    if (starknetAccount?.address) {
-      setL2WalletAddress(starknetAccount.address);
+  // get L2 address if user connected
+  function getL2Address(): string | null {
+    const starknet = (window as any).starknet;
+    if (!starknet || !starknet.selectedAddress) {
+      return null;
     }
-  }, [starknetAccount]);
+    return starknet.selectedAddress;
+  }
 
   // On address changes, refresh MyBots
   useEffect(() => {
-    if (getUserAddress() && GAME_CONTRACT_ADDRESS) {
+    if (GAME_CONTRACT_ADDRESS) {
       refreshMyBots();
-    } else {
-      setMyBots([]);
     }
-  }, [l1Address, l2WalletAddress]);
-
-  function getUserAddress(): string | null {
-    if (l2WalletAddress) return l2WalletAddress;
-    if (l1Connected && l1Address) return l1Address;
-    return null;
-  }
+    // eslint-disable-next-line
+  }, [l1Address, l1Connected, getL2Address()]);
 
   async function refreshMyBots() {
     setMyBotsLoading(true);
     try {
       const addr = getUserAddress();
-      if (!addr || !GAME_CONTRACT_ADDRESS) return;
+      if (!addr) {
+        setMyBots([]);
+        return;
+      }
       const bots = await fetchPlayerBots(GAME_CONTRACT_ADDRESS, addr);
       setMyBots(bots);
     } catch (err) {
@@ -206,35 +183,57 @@ export default function MainGame() {
     }
   }
 
-  // Deploy a bot
+  function getUserAddress(): string | null {
+    const l2 = getL2Address();
+    if (l2) return l2;
+    if (l1Connected && l1Address) return l1Address;
+    return null;
+  }
+
   async function handleDeployBot(tileLocation: string) {
     const addr = getUserAddress();
     if (!addr) {
       setDeployError("No wallet connected. Please connect L1 or L2 first!");
       return;
     }
+
     setDeploying(true);
     setDeployMessage("Preparing Deployment...");
+
     try {
-      if (l2WalletAddress) {
-        await checkL2Balance(starknetAccount!, L2_TOKEN_ADDRESS, REQUIRED_BOT_DEPLOY_AMOUNT);
+      const maybeL2 = getL2Address();
+      if (maybeL2) {
+        // L2 path
+        const starknet = (window as any).starknet;
+        if (!starknet.account) {
+          throw new Error("No L2 account found. Reconnect L2 wallet?");
+        }
+
+        await checkL2Balance(starknet.account, L2_TOKEN_ADDRESS, REQUIRED_BOT_DEPLOY_AMOUNT);
+
         setDeployMessage("Signing L2 transaction...");
-        const txHash = await deployBotFromL2(starknetAccount!, l2WalletAddress, tileLocation);
+        const txHash = await deployBotFromL2(starknet.account, maybeL2, tileLocation);
+
         setDeployMessage(`Deploying to tile ${tileLocation} (L2 TX: ${txHash})`);
       } else if (l1Connected && l1Address) {
-        await checkL1Balance(l1Address, L1_TOKEN_ADDRESS, REQUIRED_BOT_DEPLOY_AMOUNT);
-        setDeployMessage("Bridging from L1 to L2/L3...");
-        const depositHash = await deployBotFromL1(
+        // L1 path
+        await checkL1Balance(l1Address as `0x${string}`, L1_TOKEN_ADDRESS, REQUIRED_BOT_DEPLOY_AMOUNT);
+
+        setDeployMessage("Bridging from L1 to L2...");
+        const depositTx = await deployBotFromL1(
           l1Address as `0x${string}`,
           REQUIRED_BOT_DEPLOY_AMOUNT,
           BigInt(tileLocation)
         );
-        setDeployMessage(`Deploy TX: ${depositHash}, crossing the chain...`);
+        setDeployMessage(`Deploy TX: ${depositTx}, crossing the chain...`);
       }
+
+      // Show success
       setTimeout(() => {
         refreshMyBots();
         setDeployMessage("Deployment submitted! Waiting for chain events...");
       }, 2000);
+
       setTimeout(() => {
         setDeploying(false);
       }, 5000);
@@ -245,7 +244,7 @@ export default function MainGame() {
     }
   }
 
-  // Layer logic
+  // tile layering logic
   function handleTileClick(idx: number) {
     if (currentLayer < 4) {
       setTransitioning(true);
@@ -256,7 +255,7 @@ export default function MainGame() {
       }, 400);
       return;
     }
-    // If layer=4 => deploy
+    // layer=4 => deploy
     const rng = computeTileRange();
     if (!rng) return;
     const startIndex = parseInt(rng.split("-")[0], 10);
@@ -299,14 +298,13 @@ export default function MainGame() {
     const startNum = parseInt(startStr, 10);
     const tilePos = String(startNum + idx);
     const st = tileStates[tilePos];
-    if (!st) return null;
     if (st === "diamond") return <img src="/diamond.gif" alt="diamond" className="tile-overlay-gif" />;
     if (st === "bomb") return <img src="/nuke.gif" alt="bomb" className="tile-overlay-gif" />;
     if (st === "empty") return <img src="/hammer.gif" alt="hammer" className="tile-overlay-gif" />;
     return null;
   }
 
-  // Toggle “MyBots TX” vs “All TX”
+  // filter: show only MyBots TX or all
   function toggleMyBotsTx() {
     setFilterLoad(true);
     setTimeout(() => {
@@ -315,22 +313,16 @@ export default function MainGame() {
     }, 200);
   }
 
-  /**
-   * Checks if a transaction is tied to one of our bot addresses.
-   * The first element of `tx.data` is the bot address.
-   */
   function isMyBotTx(tx: TransactionItem, botAddrs: string[]): boolean {
     if (!tx.data || tx.data.length === 0) return false;
-    const maybeBotAddr = tx.data[0].toLowerCase();
+    const maybeBotAddr = tx.data[0]?.toLowerCase();
     return botAddrs.some((b) => b.toLowerCase() === maybeBotAddr);
   }
 
-  // Filter transactions if showMyBotsTxOnly is active
   const finalDisplayed = showMyBotsTxOnly
     ? displayedTx.filter((tx) => isMyBotTx(tx, myBots))
     : displayedTx;
 
-  // Count total known transactions: pending + displayed
   const totalTxCount = pendingTxsRef.current.length + displayedTx.length;
 
   return (
@@ -345,11 +337,7 @@ export default function MainGame() {
         />
       )}
       {deployError && (
-        <Popup
-          isOpen={true}
-          title="Error"
-          onClose={() => setDeployError(null)}
-        >
+        <Popup isOpen={true} title="Error" onClose={() => setDeployError(null)}>
           <p style={{ color: "red" }}>{deployError}</p>
         </Popup>
       )}
@@ -404,36 +392,41 @@ export default function MainGame() {
           </ul>
         </Card>
 
-        {/* CENTER: The layered tile approach */}
+        {/* CENTER: layered tiles */}
         <div className={`grid-section ${transitioning ? "fade-out" : "fade-in"}`}>
           {currentLayer > 1 && (
-            <Button onClick={handleBackLayer}>← Back to Layer {currentLayer - 1}</Button>
+            <Button onClick={handleBackLayer}>
+              ← Back to Layer {currentLayer - 1}
+            </Button>
           )}
           <div
             className="grid-container"
             style={{
-              gridTemplateColumns: currentLayer === 4 ? "repeat(4, 0.5fr)" : "repeat(10, 0.5fr)",
+              gridTemplateColumns: currentLayer === 4
+                ? "repeat(4, 0.5fr)"
+                : "repeat(10, 0.5fr)",
             }}
           >
-            {Array(currentLayer === 4 ? 20 : 100).fill(0).map((_, idx) => (
-              <div
-                key={idx}
-                className="tile"
-                style={{
-                  width: currentLayer === 4 ? 110 : 44,
-                  height: currentLayer === 4 ? 95 : 44,
-                  border: "2px dashed black",
-                  backgroundImage: `url("/tile_${currentLayer}.png")`,
-                  backgroundSize: "cover",
-                  backgroundPosition: "center",
-                }}
-                onMouseEnter={() => setHoveredTile(idx)}
-                onMouseLeave={() => setHoveredTile(null)}
-                onClick={() => handleTileClick(idx)}
-              >
-                {renderTileIcon(idx)}
-              </div>
-            ))}
+            {Array(currentLayer === 4 ? 20 : 100)
+              .fill(0)
+              .map((_, idx) => (
+                <div
+                  key={idx}
+                  className="tile"
+                  style={{
+                    width: currentLayer === 4 ? 110 : 44,
+                    height: currentLayer === 4 ? 95 : 44,
+                    border: "2px dashed black",
+                    backgroundImage: `url("/tile_${currentLayer}.png")`,
+                    backgroundSize: "cover",
+                  }}
+                  onMouseEnter={() => setHoveredTile(idx)}
+                  onMouseLeave={() => setHoveredTile(null)}
+                  onClick={() => handleTileClick(idx)}
+                >
+                  {renderTileIcon(idx)}
+                </div>
+              ))}
           </div>
           {hoveredTile !== null && (
             <div className="hover-info">
@@ -468,11 +461,6 @@ export default function MainGame() {
               className="w-full mt-1"
             />
           )}
-
-          {/* 
-            We pass the filtered list of transactions
-            (based on 'myBots') to TransactionFeed.
-          */}
           <TransactionFeed transactions={finalDisplayed} />
         </Card>
       </div>
@@ -480,7 +468,9 @@ export default function MainGame() {
   );
 }
 
-// Simple stats row component for demonstration
+/** 
+ * Example stats row 
+ */
 function StatsRow({ stats }: { stats: any }) {
   const icons: Record<string, string> = {
     totalPlayers: "/mario.gif",
@@ -490,6 +480,7 @@ function StatsRow({ stats }: { stats: any }) {
     diamondsMined: "/diamond.gif",
     totalTilesMined: "/mining.gif",
   };
+
   const statKeys = Object.keys(stats);
 
   return (
